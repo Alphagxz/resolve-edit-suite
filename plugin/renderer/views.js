@@ -47,7 +47,7 @@
 
   // ---------- Captions ----------
   const capForm = {
-    sourceKind: 'file', path: '', offsetMs: 0, trackType: 'audio', trackIndex: 1,
+    sourceKind: 'audio', keepResolveTrack: false, path: '', offsetMs: 0, trackType: 'audio', trackIndex: 1,
     maxCharsPerLine: 32, maxLines: 2, maxWordsPerCue: 0, minDurationMs: 700, maxDurationMs: 6000, maxGapMs: 600, lingerMs: 250, maxCps: 20,
     caseMode: 'as-is', emphasisWords: '', emphNumbers: false, emphLongest: false, timingShiftMs: 0, minGapFrames: 0, zone: '', anchor: '',
     previewIndex: 0, styleId: '', emphasisStyleId: '', styleQuery: '',
@@ -61,8 +61,14 @@
 
     const source = h('div.card',
       h('h2', '1 · Source'),
-      h('div.seg', ['file', 'transcription'].map((k) => h('button' + (f.sourceKind === k ? '.on' : ''), { onclick: () => { f.sourceKind = k; rerender(); } }, k === 'file' ? 'Subtitle / transcript file' : 'Resolve transcription'))),
-      f.sourceKind === 'file'
+      h('div.seg', [['audio', 'From timeline audio'], ['file', 'Subtitle file'], ['transcription', 'Clip transcription (21.1)']].map(([k, label]) => h('button' + (f.sourceKind === k ? '.on' : ''), { onclick: () => { f.sourceKind = k; rerender(); } }, label))),
+      f.sourceKind === 'audio'
+        ? h('div', { style: 'margin-top:10px' },
+          h('div.row', capBadge('captions.autoSubtitles')),
+          h('p.small.muted', { style: 'margin:8px 0' }, 'Resolve Studio transcribes the audio of the open timeline. The suite reads the words and timings, removes Resolve\'s plain subtitle track again, and builds your styled captions from them. No timeline copies are made.'),
+          h('label.check', h('input', { type: 'checkbox', checked: f.keepResolveTrack, onchange: bind('keepResolveTrack') }), 'Keep Resolve\'s subtitle track'),
+          h('div.small.faint', { style: 'margin-top:6px' }, 'Uses the mixed timeline audio; music under speech can lower accuracy. Click Generate preview to start.'))
+        : f.sourceKind === 'file'
         ? h('div', { style: 'margin-top:10px' },
           h('div.row', h('input', { type: 'text', value: f.path, placeholder: 'Choose an .srt or .vtt file', style: 'flex:1', onchange: bind('path') }),
             h('button.secondary', { onclick: async () => { const p2 = await window.suite.dialog('open', { filters: [{ name: 'Subtitles', extensions: ['srt', 'vtt'] }] }); if (p2) { f.path = p2; rerender(); } } }, 'Browse…')),
@@ -100,7 +106,8 @@
       h('div.row.end', { style: 'margin-top:12px' },
         h('button.primary', { onclick: async () => {
           const req = {
-            source: f.sourceKind === 'file' ? { kind: 'file', path: f.path, offsetMs: f.offsetMs } : { kind: 'transcription', track: { type: f.trackType, index: f.trackIndex } },
+            source: f.sourceKind === 'audio' ? { kind: 'resolveAudio', keepResolveTrack: f.keepResolveTrack }
+              : f.sourceKind === 'file' ? { kind: 'file', path: f.path, offsetMs: f.offsetMs } : { kind: 'transcription', track: { type: f.trackType, index: f.trackIndex } },
             options: { maxCharsPerLine: f.maxCharsPerLine, maxLines: f.maxLines, maxWordsPerCue: f.maxWordsPerCue, minDurationMs: f.minDurationMs, maxDurationMs: f.maxDurationMs, maxGapMs: f.maxGapMs, lingerMs: f.lingerMs, maxCps: f.maxCps, caseMode: f.caseMode,
               emphasis: { words: f.emphasisWords.split(',').map((s) => s.trim()).filter(Boolean), numbers: f.emphNumbers, longestPerCue: f.emphLongest } },
             timingShiftMs: f.timingShiftMs, minGapFrames: f.minGapFrames,
@@ -153,18 +160,20 @@
       toast(`Saved ${file}`, { ok: true });
     };
     const applyTrack = async () => {
-      if (!(await confirmAction('Add subtitle track', [`Adds ${p.cues.length} subtitles to the active timeline.`, 'A backup copy of the timeline is created first, and the placed timings are read back and compared with this preview.']))) return;
+      if (!(await confirmAction('Add subtitle track', [`Adds ${p.cues.length} subtitles on a new subtitle track.`, 'The placed timings are read back; if they are wrong, everything added is removed again.']))) return;
       const r = await call('captions.applySubtitleTrack', { previewId: p.previewId, confirm: true });
-      toast(`${r.summary}. Backup: ${r.backup.backupName}`, { ok: r.verify.ok });
+      toast(`${r.summary}${r.backup ? `. Backup: ${r.backup.backupName}` : ''}`, { ok: r.verify.ok });
       if (!r.verify.ok) toast(r.verify.problems.slice(0, 3).join(' '), { source: 'Result verification' });
     };
     const applyStyled = async (limit) => {
       if (!f.styleId) return toast('Choose a caption style first.', { source: 'Input' });
       const what = limit ? 'Places ONE test caption' : `Places ${p.cues.length} captions`;
-      if (!(await confirmAction(limit ? 'Place test caption' : 'Place all captions', [`${what} on a new video track using the selected preset, and sets its text.`, 'The timeline is backed up first; nothing on existing tracks is moved or replaced.']))) return;
+      if (!(await confirmAction(limit ? 'Place test caption' : 'Place all captions', [`${what} on a new video track using the selected preset, and sets its text.`, 'Nothing on existing tracks is moved or replaced, and no timeline copy is made. "Remove these captions" undoes it exactly.']))) return;
       const r = await call('captions.applyStyled', { previewId: p.previewId, styleId: f.styleId, emphasisStyleId: f.emphasisStyleId || undefined, limit, confirm: true });
       toast(r.summary, { ok: r.verify.ok && !r.textFailures.length });
       for (const x of [...r.skipped, ...r.textFailures.map((t) => `Caption ${t.id}: ${t.reason}`)].slice(0, 4)) toast(x, { source: 'Result verification' });
+      state.lastPlacement = { id: r.placementId, count: r.placement ? r.placement.itemIds.length : 0, track: r.trackIndex, summary: r.summary, textDebug: r.textDebug, ok: r.verify.ok && !r.textFailures.length };
+      rerender();
     };
 
     return h('div.grid', { style: 'margin-top:14px' },
@@ -201,6 +210,16 @@
               h('button.secondary', { disabled: !usable('fusion.textEdit') || undefined, onclick: () => applyStyled(1) }, 'Place first caption (test)'),
               h('button.primary', { disabled: !usable('fusion.textEdit') || undefined, onclick: () => applyStyled(0) }, 'Place all')))
             : h('div.notice', 'No caption presets imported in this project. Import them in Asset Setup, then ', h('button.ghost', { onclick: async () => { const r = await call('assets.captionStyles'); state.styles = r.styles; state.stylesHidden = r.hidden || []; rerender(); } }, 'reload styles'), '.'))),
+      state.lastPlacement ? h('div.card', h('h2', 'Last placement'),
+        h('div.notice' + (state.lastPlacement.ok ? '.ok' : '.err'), state.lastPlacement.summary),
+        state.lastPlacement.textDebug ? h('div.small.muted', `First caption: text written to ${state.lastPlacement.textDebug.via === 'follower' ? 'the Follower (animated words) node' : state.lastPlacement.textDebug.via === 'text+' ? 'the Text+ node' : 'nothing'}; Text+ nodes found: ${state.lastPlacement.textDebug.textTools ?? 0}, Follower nodes found: ${state.lastPlacement.textDebug.followers ?? 0}; Resolve read back: "${state.lastPlacement.textDebug.readBack ?? ''}".`) : null,
+        state.lastPlacement.id ? h('button.secondary', { style: 'margin-top:8px', onclick: async () => {
+          if (!(await confirmAction('Remove these captions', `Deletes the ${state.lastPlacement.count} caption(s) this placement added on V${state.lastPlacement.track}, and that track if it is then empty. Nothing else is touched.`))) return;
+          const rm = await call('captions.removePlaced', { placementId: state.lastPlacement.id, confirm: true });
+          toast(rm.summary, { ok: !rm.remaining });
+          state.lastPlacement = null;
+          rerender();
+        } }, 'Remove these captions') : null) : null,
       notes.length ? h('div.card', h('h2', 'Checks'), list(notes)) : null,
       h('div.card.flush', h('div.table-wrap', h('table',
         h('thead', h('tr', h('th', '#'), h('th', 'In'), h('th', 'Out'), h('th', 'Text'), h('th', 'Flags'))),
@@ -458,6 +477,9 @@
           h('div.row', h('span.mono', s.ffmpegPath || '(using ffmpeg on PATH if present)'),
             h('button.secondary', { onclick: async () => { const p = await window.suite.dialog('open', {}); if (p) { await call('settings.set', { key: 'ffmpegPath', value: p }); rerender(); } } }, 'Choose…'),
             s.ffmpegPath ? h('button.ghost', { onclick: async () => { await call('settings.set', { key: 'ffmpegPath', value: null }); rerender(); } }, 'Clear') : null)),
+        h('div.card', { style: 'margin-top:14px' }, h('h2', 'Safety'),
+          h('label.check', h('input', { type: 'checkbox', checked: Boolean(s.backupBeforeEdits), onchange: async (e) => { await call('settings.set', { key: 'backupBeforeEdits', value: e.target.checked }); rerender(); } }), 'Back up timeline before caption edits (makes a timeline copy each time)'),
+          h('p.small.muted', { style: 'margin:6px 0 0' }, 'Off by default: caption placement only adds a new track, and "Remove these captions" undoes it exactly.')),
         h('div.card', { style: 'margin-top:14px' }, h('h2', 'Extra template folders'),
           roots.length ? h('table', h('tbody', roots.map((r) => h('tr', h('td.mono', r), h('td', h('button.ghost', { onclick: async () => { await call('settings.set', { key: 'templateRoots', value: roots.filter((x) => x !== r) }); rerender(); } }, 'Remove')))))) : h('p.muted', 'None. The standard Fusion Templates folders are always included.'),
           h('button.secondary', { onclick: async () => { const p = await window.suite.dialog('open', { directory: true }); if (p) { await call('settings.set', { key: 'templateRoots', value: [...roots, p] }); rerender(); } } }, 'Add folder…')),

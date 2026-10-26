@@ -24,6 +24,12 @@ function seed() {
   tl.tracks.audio[0].push(new TimelineItem({ name: 'founder-take-3', start: 90000, end: 90300, mpi }));
   fake.project.timelines.push(tl);
   fake.project.current = tl;
+  // Scripted Resolve speech-to-text for "From timeline audio".
+  tl.speech = [
+    { start: 0.4, end: 2.4, text: 'We grew revenue 300% in one quarter' },
+    { start: 4.1, end: 6.5, text: 'and it started with one simple change to our onboarding' },
+    { start: 8.0, end: 10.4, text: 'Here is exactly what we did' },
+  ];
   fake.project.settings.timelineResolutionWidth = '1080';
   fake.project.settings.timelineResolutionHeight = '1920';
   const srt = path.join(dir, 'founder.srt');

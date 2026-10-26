@@ -130,6 +130,85 @@ test('a pass from the old (weaker) subtitle test no longer counts', async () => 
   assert.equal(s.capabilities['captions.srtTrack'].status, 'needs-verification');
 });
 
+const SPEECH = [
+  { start: 1.0, end: 3.2, text: 'This is how we doubled our signups' },
+  { start: 3.6, end: 6.0, text: 'in one quarter with one simple change' },
+];
+const AUDIO_SRC = { kind: 'resolveAudio', pollMs: 0, emptyGraceMs: 0 };
+
+test('captions from timeline audio: no timeline copy, Resolve track removed, preview built', async () => {
+  const { router, tl, fake } = setup();
+  addMediaClip(tl);
+  tl.speech = SPEECH;
+  const p = await ok(router, 'captions.prepare', { source: AUDIO_SRC });
+  assert.deepEqual(p.cues.map((c) => c.text.replace(/\n/g, ' ')), SPEECH.map((x) => x.text));
+  assert.equal(p.cues[0].startFrame, 90025);
+  assert.equal(tl.tracks.subtitle.length, 0, "Resolve's generated subtitle track removed again");
+  assert.equal(fake.project.timelines.length, 1, 'no timeline copies');
+  assert.ok(p.warnings.some((w) => /removed again/.test(w)));
+});
+
+test('captions from timeline audio can keep Resolve subtitle track', async () => {
+  const { router, tl } = setup();
+  addMediaClip(tl);
+  tl.speech = SPEECH;
+  await ok(router, 'captions.prepare', { source: { ...AUDIO_SRC, keepResolveTrack: true } });
+  assert.equal(tl.tracks.subtitle.length, 1);
+  assert.equal(tl.tracks.subtitle[0].length, 2);
+});
+
+test('captions from timeline audio: honest errors for unreadable text and silence', async () => {
+  const { router, tl } = setup();
+  addMediaClip(tl);
+  tl.speech = SPEECH;
+  tl.subtitleNames = 'placeholder';
+  let r = await router.invoke('captions.prepare', { source: AUDIO_SRC });
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /does not expose their text/);
+  assert.equal(tl.tracks.subtitle.length, 1, 'kept so the user can see them');
+  tl.tracks.subtitle = [];
+  tl.speech = [];
+  r = await router.invoke('captions.prepare', { source: AUDIO_SRC });
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /could not create subtitles|no speech/);
+});
+
+test('captions from timeline audio refused on the free edition', async () => {
+  const { router, tl } = setup({ studio: false });
+  addMediaClip(tl);
+  tl.speech = SPEECH;
+  const r = await router.invoke('captions.prepare', { source: AUDIO_SRC });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.category, 'edition');
+});
+
+test('styled captions: no timeline copy by default, exact removal, text diagnostics', async () => {
+  const { router, dir, tl, fake, storage } = setup();
+  addMediaClip(tl);
+  tl.speech = SPEECH;
+  const file = path.join(dir, 'Styles.drb');
+  fs.writeFileSync(file, 'opaque');
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const { styles } = await ok(router, 'assets.captionStyles');
+  const p = await ok(router, 'captions.prepare', { source: AUDIO_SRC });
+  const r = await ok(router, 'captions.applyStyled', { previewId: p.previewId, styleId: styles.find((x) => x.name === 'Smooth Word Up').id, confirm: true });
+  assert.equal(fake.project.timelines.length, 1, 'no timeline copy');
+  assert.equal(r.textDebug.via, 'follower');
+  assert.equal(r.textDebug.readBack, p.cues[0].text);
+  assert.equal(tl.tracks.video.length, 2);
+  const rm = await ok(router, 'captions.removePlaced', { placementId: r.placementId, confirm: true });
+  assert.equal(rm.removed, p.cues.length);
+  assert.equal(rm.trackRemoved, true);
+  assert.equal(tl.tracks.video.length, 1, 'only the added track is gone');
+  assert.equal(tl.tracks.video[0].length, 1, 'the original clip is untouched');
+  // opt-in backup still works
+  storage.updateSettings((st) => ({ ...st, backupBeforeEdits: true }));
+  const r2 = await ok(router, 'captions.applyStyled', { previewId: p.previewId, styleId: styles[0].id, limit: 1, confirm: true });
+  assert.ok(r2.backup && /backup/.test(r2.backup.backupName));
+  assert.equal(fake.project.timelines.length, 2);
+});
+
 test('writes require confirmation', async () => {
   const { router } = setup();
   const r = await router.invoke('assets.importBin', {});
@@ -209,8 +288,9 @@ test('captions: preview, gated SRT placement, verified after diagnostics test', 
   assert.equal(applied.subtitleTrack, 2, 'placed on a new track');
   assert.deepEqual(tl.tracks.subtitle[0].map((x) => x.text), ['existing']);
   assert.equal(tl.tracks.subtitle[1].length, preview.cues.length);
-  assert.match(applied.backup.backupName, /backup/);
-  assert.equal(fake.project.current, tl, 'original timeline still current after backup');
+  assert.equal(applied.backup, null, 'no timeline copy by default');
+  assert.equal(fake.project.timelines.length, 1);
+  assert.equal(fake.project.current, tl);
 });
 
 test('captions: styled placement sets the words on animated (follower) and direct presets', async () => {

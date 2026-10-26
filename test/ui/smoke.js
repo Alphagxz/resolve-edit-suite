@@ -39,12 +39,11 @@ const { start } = require('./harness');
   await shot('02-setup');
 
   await nav('captions');
-  await page.click('text=Browse…');
-  await page.waitForTimeout(300);
-  await page.fill('input[placeholder="Choose an .srt or .vtt file"]', await page.inputValue('input[placeholder="Choose an .srt or .vtt file"]'));
+  // Default source: captions from the timeline's audio (Resolve speech-to-text).
+  await page.waitForSelector("text=Keep Resolve's subtitle track");
   await page.check('text=Numbers');
-  await page.click('text=Generate preview');
-  await page.waitForSelector('.frame .capbox');
+  await page.click('button:has-text("Generate preview")');
+  await page.waitForSelector('.frame .capbox', { timeout: 15000 });
   await page.waitForTimeout(400);
   await shot('03-captions-preview');
   await page.selectOption('label.field:has-text("Caption style") select', { index: 1 });
@@ -52,7 +51,19 @@ const { start } = require('./harness');
   await confirm();
   await page.waitForTimeout(600);
   if (!/placement verified/.test(await toastText())) throw new Error('styled caption toast missing: ' + (await toastText()));
+  await page.waitForSelector('text=Last placement');
+  if (!/Resolve read back/.test(await page.textContent('body'))) throw new Error('text diagnostics missing');
   await shot('04-captions-applied');
+  await page.click('text=Remove these captions');
+  await confirm();
+  await page.waitForTimeout(500);
+  if (!/caption\(s\) removed/.test(await toastText())) throw new Error('removal toast missing: ' + (await toastText()));
+  // The subtitle-file source still works.
+  await page.click('.seg button:has-text("Subtitle file")');
+  await page.click('text=Browse…');
+  await page.waitForTimeout(300);
+  await page.click('button:has-text("Regenerate preview")');
+  await page.waitForTimeout(800);
 
   await nav('roughcut');
   await page.click('button:has-text("Analyse")');

@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   templateRoots: [], // extra roots beyond the OS defaults
   favourites: { templates: [], captionStyles: [] },
   ffmpegPath: null,
+  backupBeforeEdits: false, // timeline copies before caption edits are opt-in
   captions: {},
   roughCut: {},
   verified: {}, // featureId -> { ok, at, build, detail } from Diagnostics scratch tests

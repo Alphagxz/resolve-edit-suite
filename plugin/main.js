@@ -75,7 +75,13 @@ app.whenReady().then(() => {
   loadBinding();
   const storage = createStorage();
   const emit = (channel, payload) => { if (win && !win.isDestroyed()) win.webContents.send(channel, payload); };
-  const router = createRouter({ getResolve, storage, emit, pluginVersion: PLUGIN_VERSION });
+  // Long operations (speech-to-text) raise the API timeout temporarily.
+  const setApiTimeout = (secs) => {
+    if (!WorkflowIntegration || typeof WorkflowIntegration.SetAPITimeout !== 'function') return null;
+    try { WorkflowIntegration.SetAPITimeout(secs); } catch { return null; }
+    return () => { try { WorkflowIntegration.SetAPITimeout(60); } catch { /* ignore */ } };
+  };
+  const router = createRouter({ getResolve, storage, emit, pluginVersion: PLUGIN_VERSION, setApiTimeout });
 
   ipcMain.handle('suite:invoke', async (_e, op, args) => {
     if (op === 'app.initError') return { ok: true, result: initError };

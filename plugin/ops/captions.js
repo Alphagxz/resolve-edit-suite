@@ -24,6 +24,11 @@ const { isAvailable } = require('../resolve/capabilities');
 const { timelineContext, trackItems, clipProperty, mediaRate, listOf } = require('./resolve-reads');
 const { backupTimeline, stamp } = require('./backup');
 
+/** Timeline copies only when the user turned on "Back up timeline before edits" (off by default). */
+async function maybeBackup(a, deps, project, timeline) {
+  return deps.storage.loadSettings().backupBeforeEdits ? backupTimeline(a, project, timeline, 'captions') : null;
+}
+
 function loadFileWords(file) {
   if (!fs.existsSync(file)) throw new SuiteError(`Subtitle file not found: ${file}`, 'asset-missing');
   const text = fs.readFileSync(file, 'utf8');
@@ -106,6 +111,7 @@ async function prepare(a, deps, req, task) {
   let source;
   if (req.source.kind === 'file') source = loadFileWords(req.source.path);
   else if (req.source.kind === 'transcription') source = await transcriptWords(a, timeline, ctx, req.source.track, task);
+  else if (req.source.kind === 'resolveAudio') source = await audioWords(a, deps, timeline, ctx, req.source, task);
   else throw new SuiteError('Choose a caption source.', 'invalid-input');
   if (!source.words.length) throw new SuiteError('No words found in the selected source.', 'invalid-input');
 
@@ -162,8 +168,8 @@ async function applySubtitleTrack(a, deps, preview, task) {
   if (ctx.startFrame !== preview.timeline.startFrame || ctx.rate.label !== preview.timeline.rate) {
     throw new SuiteError('The active timeline changed since the preview was made. Regenerate the preview.', 'invalid-input');
   }
-  task.progress(5, 'Backing up timeline');
-  const backup = await backupTimeline(a, project, timeline, 'captions');
+  task.progress(5, 'Preparing subtitles');
+  const backup = await maybeBackup(a, deps, project, timeline);
   const srtPath = deps.storage.writeGenerated(`captions ${stamp()}.srt`, srtFromPreview(preview));
   task.checkpoint();
   const mediaPool = await a.must('Project', project, 'GetMediaPool');
@@ -185,7 +191,102 @@ async function applySubtitleTrack(a, deps, preview, task) {
   // A real failure on this build outranks the earlier scratch-test pass: switch the feature off.
   const caps = deps.capabilities();
   deps.storage.updateSettings((s) => ({ ...s, verified: { ...s.verified, 'captions.srtTrack': { ok: false, build: caps && caps.build, testVersion: 2, at: new Date().toISOString(), detail: r.verify.problems.slice(0, 2).join(' ') } } }));
-  throw new SuiteError(`Resolve did not place the subtitles at the right frames (${r.verify.problems.slice(0, 2).join(' ')}). ${r.rolledBack ? 'Everything it added was removed again, so the timeline is unchanged. ' : ''}The SRT file is kept at ${srtPath}; you can import it with File > Import > Subtitle. Backup: ${backup.backupName}.`, 'verification-failed', { srtPath, verify: r.verify });
+  throw new SuiteError(`Resolve did not place the subtitles at the right frames (${r.verify.problems.slice(0, 2).join(' ')}). ${r.rolledBack ? 'Everything it added was removed again, so the timeline is unchanged. ' : ''}The SRT file is kept at ${srtPath}; you can import it with File > Import > Subtitle.${backup ? ` Backup: ${backup.backupName}.` : ''}`, 'verification-failed', { srtPath, verify: r.verify });
+}
+
+/** All subtitle items on all subtitle tracks, with their track numbers and ids. */
+async function snapshotSubtitles(a, timeline) {
+  const n = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
+  const items = [];
+  for (let i = 1; i <= n; i++) for (const it of await trackItems(a, timeline, 'subtitle', i)) items.push({ ...it, track: i });
+  return { n, items };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const PLACEHOLDER_NAME = /^(subtitle|caption)?\s*\d*$/i;
+
+/**
+ * Captions from the timeline's own audio, using Resolve Studio's speech-to-text
+ * (Timeline.CreateSubtitlesFromAudio) on the CURRENT timeline — no copy. The
+ * subtitles Resolve generates are read (text = item name, timing = start/end)
+ * and then removed again unless the user keeps them; only their text and
+ * timing feed the caption pipeline.
+ */
+async function audioWords(a, deps, timeline, ctx, source, task) {
+  const caps = deps.capabilities();
+  if (caps && caps.isStudio === false) throw new SuiteError('Captions from audio use Resolve Studio\'s speech recognition, which is not available in the free edition.', 'edition');
+  if (caps && !isAvailable(caps, 'captions.autoSubtitles')) {
+    const f = caps.features['captions.autoSubtitles'];
+    throw new SuiteError(`Resolve's speech-to-text is not available here: ${f ? f.reasons.join(' ') : 'unknown reason'}`, 'unsupported');
+  }
+  const before = await snapshotSubtitles(a, timeline);
+  const known = new Set(before.items.map((x) => x.id));
+  const newItems = (snap) => snap.items.filter((x) => !known.has(x.id));
+
+  task.progress(5, 'Resolve is transcribing the timeline audio…');
+  const restoreTimeout = deps.setApiTimeout ? deps.setApiTimeout(30 * 60) : null;
+  let reported;
+  let callError = null;
+  try {
+    reported = await a.call('Timeline', timeline, 'CreateSubtitlesFromAudio');
+  } catch (e) {
+    callError = e; // the call may time out while Resolve keeps working; polling decides
+  } finally {
+    if (restoreTimeout) restoreTimeout();
+  }
+
+  // The returned boolean is unreliable: success = new subtitle items, stable across two polls.
+  const deadline = Date.now() + (source.timeoutSec || 15 * 60) * 1000;
+  const graceEnd = Date.now() + (source.emptyGraceMs ?? 30000);
+  let added = newItems(await snapshotSubtitles(a, timeline));
+  let stable = 0;
+  while (Date.now() < deadline) {
+    task.checkpoint();
+    if (added.length) {
+      await sleep(source.pollMs ?? 2000);
+      const again = newItems(await snapshotSubtitles(a, timeline));
+      if (again.length === added.length) stable++;
+      else stable = 0;
+      added = again;
+      if (stable >= 1) break;
+    } else {
+      if (reported === false || callError) break;
+      // Resolve may report success before its subtitles appear: allow a grace period.
+      if (Date.now() >= graceEnd) break;
+      task.progress(10, 'Waiting for Resolve to finish transcribing…');
+      await sleep(source.pollMs ?? 2000);
+      added = newItems(await snapshotSubtitles(a, timeline));
+    }
+  }
+  if (!added.length) {
+    if (callError) throw new SuiteError(`Resolve's speech-to-text did not run: ${callError.message}`, callError.category || 'exception');
+    throw new SuiteError(reported === false
+      ? 'Resolve reported that it could not create subtitles from this timeline\'s audio (no speech found, audio disabled, or the AI model is unavailable).'
+      : 'Resolve finished but produced no subtitles: no speech was found in the timeline audio.', 'call-failed');
+  }
+  added.sort((x, y) => x.start - y.start);
+  const texts = added.map((x) => String(x.name || '').trim());
+  const placeholder = texts.every((t) => !t || PLACEHOLDER_NAME.test(t)) || (texts.length > 2 && new Set(texts).size === 1);
+  if (placeholder) {
+    throw new SuiteError(`Resolve created ${added.length} subtitle(s), but this Resolve build does not expose their text through the API (items read back as "${texts[0]}"). Resolve's subtitle track was kept so you can see them.`, 'unsupported');
+  }
+
+  const warnings = ['Captions come from Resolve\'s speech recognition of the mixed timeline audio; word timing inside each line is estimated.'];
+  if (!source.keepResolveTrack) {
+    const tracks = [...new Set(added.map((x) => x.track))];
+    await a.call('Timeline', timeline, 'DeleteClips', added.map((x) => x.ref), false);
+    for (const t of tracks.sort((x, y) => y - x)) {
+      const left = listOf(await a.call('Timeline', timeline, 'GetItemListInTrack', 'subtitle', t));
+      if (!left.length && t > before.n) await a.call('Timeline', timeline, 'DeleteTrack', 'subtitle', t);
+    }
+    const after = await snapshotSubtitles(a, timeline);
+    if (newItems(after).length || after.n !== before.n) warnings.push('Resolve\'s generated subtitle track could not be fully removed; delete it from the timeline if you do not need it.');
+    else warnings.push('Resolve\'s generated subtitle track was removed again.');
+  } else {
+    warnings.push(`Resolve's subtitle track was kept (subtitle track ${added[0].track}).`);
+  }
+  const segments = added.map((x, i) => ({ id: String(i + 1), start: ctx.fromTimelineFrame(x.start), end: ctx.fromTimelineFrame(x.end), text: texts[i] }));
+  return { words: estimateWordTimings(segments), warnings, lines: segments.length };
 }
 
 /**
@@ -198,12 +299,7 @@ async function applySubtitleTrack(a, deps, preview, task) {
  * track it created — if their frames are not the expected ones.
  */
 async function placeSrtVerified(a, timeline, mediaPool, srtItem, ctx, expectedCues) {
-  const snapshot = async () => {
-    const n = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
-    const items = [];
-    for (let i = 1; i <= n; i++) for (const it of await trackItems(a, timeline, 'subtitle', i)) items.push({ ...it, track: i });
-    return { n, items };
-  };
+  const snapshot = () => snapshotSubtitles(a, timeline);
   const before = await snapshot();
   const known = new Set(before.items.map((x) => x.id));
   await a.must('Timeline', timeline, 'AddTrack', 'subtitle');
@@ -223,6 +319,40 @@ async function placeSrtVerified(a, timeline, mediaPool, srtItem, ctx, expectedCu
     rolledBack = check.items.every((x) => known.has(x.id)) && check.n === before.n;
   }
   return { trackIndex, added: added.map((x) => ({ start: x.start, end: x.end, track: x.track })), verify, rolledBack };
+}
+
+/**
+ * Remove exactly the caption items one placement added (matched by unique id
+ * on any video track), then the track it created if that is now empty.
+ */
+async function removePlaced(a, placement) {
+  const { timeline } = await a.currentTimeline();
+  const tlId = await a.call('Timeline', timeline, 'GetUniqueId').catch(() => null);
+  if (placement.timelineId && tlId && placement.timelineId !== tlId) {
+    throw new SuiteError(`These captions were placed on "${placement.timelineName}". Open that timeline first.`, 'invalid-input');
+  }
+  const ids = new Set(placement.itemIds);
+  const find = async () => {
+    const n = (await a.call('Timeline', timeline, 'GetTrackCount', 'video')) || 0;
+    const found = [];
+    for (let i = 1; i <= n; i++) for (const it of await trackItems(a, timeline, 'video', i)) if (ids.has(it.id)) found.push({ ...it, track: i });
+    return found;
+  };
+  const ours = await find();
+  if (!ours.length) return { removed: 0, trackRemoved: false, summary: 'Those captions are no longer on the timeline.' };
+  await a.call('Timeline', timeline, 'DeleteClips', ours.map((x) => x.ref), false);
+  const remaining = await find();
+  let trackRemoved = false;
+  const track = ours[0].track;
+  if (!remaining.length && !listOf(await a.call('Timeline', timeline, 'GetItemListInTrack', 'video', track)).length) {
+    trackRemoved = Boolean(await a.call('Timeline', timeline, 'DeleteTrack', 'video', track));
+  }
+  return {
+    removed: ours.length - remaining.length,
+    remaining: remaining.length,
+    trackRemoved,
+    summary: remaining.length ? `${ours.length - remaining.length} caption(s) removed; ${remaining.length} could not be removed.` : `${ours.length} caption(s) removed${trackRemoved ? ` and track V${track} deleted` : ''}.`,
+  };
 }
 
 /** Text wiring of the chosen preset items, from the validated .drb (when available). */
@@ -301,12 +431,14 @@ async function setCaptionText(a, item, text, hint = null) {
     for (const f of followers) await a.call('Tool', f, 'SetInput', 'Text', text);
     const back = [];
     for (const f of followers) back.push(textOf(await a.call('Tool', f, 'GetInput', 'Text')));
-    return back.every((b) => b === text) ? { ok: true, via: 'follower' } : { ok: false, reason: `Animated text read back as "${back.find((b) => b !== text)}" after setting it.` };
+    const debug = { path: 'follower', textTools: textTools.length, followers: followers.length, readBack: back[0] };
+    return back.every((b) => b === text) ? { ok: true, via: 'follower', debug } : { ok: false, reason: `Animated text read back as "${back.find((b) => b !== text)}" after setting it.`, debug };
   }
   const tool = textTools[0];
   await a.call('Tool', tool, 'SetInput', 'StyledText', text);
   const back = textOf(await a.call('Tool', tool, 'GetInput', 'StyledText'));
-  return back === text ? { ok: true, via: 'text+' } : { ok: false, reason: `Text read back as "${back}" after setting it (its text may be driven by another node).` };
+  const debug = { path: 'text+', textTools: textTools.length, followers: 0, readBack: back };
+  return back === text ? { ok: true, via: 'text+', debug } : { ok: false, reason: `Text read back as "${back}" after setting it (its text may be driven by another node).`, debug };
 }
 
 /**
@@ -330,8 +462,8 @@ async function applyStyled(a, deps, preview, req, task) {
   const styleDurFrames = Number(await clipProperty(a, style, 'Frames')) || null;
 
   const cues = req.limit ? preview.cues.slice(0, req.limit) : preview.cues;
-  task.progress(2, 'Backing up timeline');
-  const backup = await backupTimeline(a, project, timeline, 'captions');
+  task.progress(2, 'Preparing');
+  const backup = await maybeBackup(a, deps, project, timeline);
   task.checkpoint();
   await a.must('Timeline', timeline, 'AddTrack', 'video');
   const trackIndex = await a.must('Timeline', timeline, 'GetTrackCount', 'video');
@@ -368,10 +500,18 @@ async function applyStyled(a, deps, preview, req, task) {
   const placed = await trackItems(a, timeline, 'video', trackIndex);
   const verify = verifyCuePlacement(infos.map((x) => x.cue), placed, 1);
   const textFailures = textResults.filter((r) => !r.ok);
+  const placement = {
+    timelineId: await a.call('Timeline', timeline, 'GetUniqueId').catch(() => null),
+    timelineName: await a.call('Timeline', timeline, 'GetName'),
+    trackIndex,
+    itemIds: placed.map((x) => x.id).filter(Boolean),
+  };
+  const first = textResults[0];
   return {
-    backup, trackIndex, skipped, verify, textFailures,
+    backup, trackIndex, skipped, verify, textFailures, placement,
+    textDebug: first ? { ok: first.ok, via: first.via || null, ...(first.debug || {}) } : null,
     summary: `${placed.length}/${infos.length} caption(s) on V${trackIndex}; ${verify.ok ? 'placement verified' : 'placement differences found'}; ${textFailures.length ? textFailures.length + ' text update(s) failed' : 'all text verified'}.`,
   };
 }
 
-module.exports = { prepare, srtFromPreview, applySubtitleTrack, placeSrtVerified, applyStyled, transcribeTrack, verifyCuePlacement, loadFileWords };
+module.exports = { prepare, srtFromPreview, applySubtitleTrack, placeSrtVerified, removePlaced, snapshotSubtitles, audioWords, applyStyled, transcribeTrack, verifyCuePlacement, loadFileWords };
