@@ -57,9 +57,14 @@ class TimelineItem {
   GetStart() { return this.start; }
   GetEnd() { return this.end; }
   GetDuration() { return this.end - this.start; }
-  GetLeftOffset() { return this.leftOffset; }
+  // Real Resolve (21.0.0b20) raises for items without source media.
+  _requireMedia(method) {
+    if (!this.mpi) throw new Error(`Execute: ${method}: Error response (errorStr:Item is not a media) (errorCode:6)`);
+  }
+  GetLeftOffset() { this._requireMedia('GetLeftOffset'); return this.leftOffset; }
   // Seconds into the source media (official since 21.0). Mock: leftOffset is in media frames.
   GetSourceStartTime() {
+    this._requireMedia('GetSourceStartTime');
     if (this.sourceStartTimeOverride !== null) return this.sourceStartTimeOverride;
     return this.mpi ? this.leftOffset / Number(this.mpi.props.FPS) : 0;
   }

@@ -69,6 +69,18 @@ test('capabilities on 21.0.0 beta 20 (the current test build)', async () => {
   assert.equal(s.capabilities['captions.srtTrack'].evidence, 'verified-here');
 });
 
+test('subtitle import test removes its test clip even when a step fails', async () => {
+  const { router, fake } = setup();
+  const pool = fake.project.mediaPool;
+  pool.AppendToTimeline = () => { throw new Error('Execute: AppendToTimeline: Error response (errorStr:simulated) (errorCode:1)'); };
+  const r = await router.invoke('diag.testSubtitles', { confirm: true });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.source, 'Resolve API (raised an error)');
+  const clips = (f) => [...f.clips, ...f.subs.flatMap(clips)];
+  assert.deepEqual(clips(pool.root).map((c) => c.name), [], 'no leftover test clip');
+  assert.equal(fake.project.timelines.length, 1, 'scratch timeline removed');
+});
+
 test('writes require confirmation', async () => {
   const { router } = setup();
   const r = await router.invoke('assets.importBin', {});
