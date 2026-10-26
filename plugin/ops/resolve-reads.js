@@ -44,7 +44,10 @@ async function trackItems(a, timeline, type, index) {
       name: await a.call('TimelineItem', it, 'GetName'),
       start: await a.must('TimelineItem', it, 'GetStart'),
       end: await a.must('TimelineItem', it, 'GetEnd'),
-      leftOffset: await a.call('TimelineItem', it, 'GetLeftOffset'),
+      // Source offsets exist only for media-backed items. On subtitles, titles
+      // and generators Resolve raises "Item is not a media" (errorCode 6,
+      // observed on 21.0.0b20), so these are null for such items.
+      leftOffset: await optionalNumber(a, it, 'GetLeftOffset'),
       // Seconds into the source media; unambiguous for mixed-rate clips.
       sourceStartTime: await optionalNumber(a, it, 'GetSourceStartTime'),
     });

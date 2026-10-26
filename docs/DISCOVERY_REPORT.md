@@ -119,3 +119,8 @@ Probed timeline: "Timeline 3", **24 fps** NDF, 1920×1080, start 86400 (01:00:00
 - Captions on 21.0: `TranscribeAudio` exists but there is no `GetTranscription` and no API to read or write subtitle text. Caption sources on this build are SRT/VTT files; `CreateSubtitlesFromAudio` can create Resolve's own (unstyled) subtitles.
 
 Not yet obtained: the SamplePlugin's `main.js`/`preload.js` (discovery copies only README/manifest/docs files), to compare the sandboxed IPC structure line by line.
+
+### First run of the plugin inside Resolve (2026-10-26, 21.0.0b20, Electron 36.3.2)
+
+- Plugin loads from `com.editsuite.resolve.panel`, connects, and reads project, timeline, rate and resolution correctly. Calibration ran.
+- **Bug found:** "Test subtitle import" failed with `TimelineItem.GetLeftOffset … (errorStr:Item is not a media) (errorCode:6)`. The JS API **raises** on items without source media (subtitles, titles, generators) instead of returning a value. The verification step read source offsets for every item; it now reads them only where available. The mock now raises the same way, and the test also removes its test clip even when a step fails (it previously could leave `subtitle-import-test.srt` in the Media Pool).

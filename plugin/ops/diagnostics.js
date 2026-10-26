@@ -158,10 +158,16 @@ async function testSubtitleImport(a, storage) {
     const file = storage.writeGenerated('subtitle-import-test.srt', subs.writeSrt(cues, { msRounding: 'ceil' }));
     const imported = listOf(await a.call('MediaPool', mediaPool, 'ImportMedia', [file]));
     if (!imported.length) return { ok: false, detail: 'ImportMedia did not import an .srt file.' };
-    await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: imported[0], recordFrame: ctx.startFrame }]);
-    const n = (await a.call('Timeline', scratch, 'GetTrackCount', 'subtitle')) || 0;
-    const placed = n ? await trackItems(a, scratch, 'subtitle', 1) : [];
-    await a.call('MediaPool', mediaPool, 'DeleteClips', imported);
+    let placed;
+    try {
+      await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: imported[0], recordFrame: ctx.startFrame }]);
+      const n = (await a.call('Timeline', scratch, 'GetTrackCount', 'subtitle')) || 0;
+      placed = n ? await trackItems(a, scratch, 'subtitle', 1) : [];
+    } finally {
+      // Always remove the test clip, even if a step above failed.
+      const removed = await a.call('MediaPool', mediaPool, 'DeleteClips', imported).catch(() => false);
+      if (!removed) a.cleanupWarning = 'The test clip "subtitle-import-test.srt" could not be removed from the Media Pool; delete it manually.';
+    }
     const expected = cues.map((c) => ({ s: ctx.startFrame + tb.flicksToFrames(c.start, ctx.rate), e: ctx.startFrame + tb.flicksToFrames(c.end, ctx.rate) }));
     const ok = placed.length === 2 && placed.every((p, i) => p.start === expected[i].s && p.end === expected[i].e);
     return { ok, detail: ok ? 'Two test subtitles placed at the exact expected frames.' : `Placed ${placed.length} item(s): ${JSON.stringify(placed.map((p) => [p.start, p.end]))}; expected ${JSON.stringify(expected.map((e) => [e.s, e.e]))}.` };
