@@ -152,3 +152,25 @@ test('caption layout for horizontal, vertical and square frames', () => {
   const s = scaleForResolution({ width: 1920, height: 1080 }, { width: 1080, height: 1920 });
   assert.ok(Math.abs(s.sizeFactor - 1.77778) < 1e-3);
 });
+
+const { patchCompText, readCompText } = require('../plugin/core/comp-text');
+
+test('comp text: follower words replaced, connection kept, escaping safe', () => {
+  const lua = 'Composition {\n\tTools = ordered() {\n\t\tTemplate = TextPlus { Inputs = { StyledText = Input { SourceOp = "Follower1", Source = "StyledText", }, Font = Input { Value = "Helvetica", }, }, },\n\t\tFollower1 = StyledTextFollower { Inputs = { Delay = Input { Value = 0.46, }, Text = Input { Value = StyledText { Value = "Smooth Word Up" }, }, }, },\n\t}\n}';
+  assert.equal(readCompText(lua), 'Smooth Word Up');
+  const p = patchCompText(lua, 'He said "hi" \\ 100%\nnext');
+  assert.equal(p.ok, true);
+  assert.equal(p.target, 'follower');
+  assert.equal(readCompText(p.lua), 'He said "hi" \\ 100%\nnext');
+  assert.match(p.lua, /StyledText = Input \{ SourceOp = "Follower1"/, 'Text+ stays driven by the follower');
+  assert.match(p.lua, /Font = Input \{ Value = "Helvetica"/, 'other inputs untouched');
+});
+
+test('comp text: direct Text+ presets, and honest refusals', () => {
+  const direct = 'Composition { Tools = ordered() { Template = TextPlus { Inputs = { StyledText = Input { Value = "Glitch Text", }, }, }, } }';
+  const p = patchCompText(direct, 'New words');
+  assert.equal(p.target, 'text+');
+  assert.equal(readCompText(p.lua), 'New words');
+  assert.equal(patchCompText('Composition { Tools = ordered() { Transform1 = Transform { }, } }', 'x').ok, false);
+  assert.match(patchCompText('Composition { Compressed = true, }', 'x').reason, /compressed/);
+});

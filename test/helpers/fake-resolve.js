@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseSrt } = require('../../plugin/core/subtitles');
 const tb = require('../../plugin/core/timebase');
+const { luaString, readCompText } = require('../../plugin/core/comp-text');
 
 let uid = 0;
 const nextId = (p) => `${p}-${++uid}`;
@@ -40,11 +41,29 @@ class Comp {
       this.tools.Template.drivenBy.StyledText = { tool: this.tools.Follower1, input: 'Text' };
     }
   }
+  // Observed on 21.0.0b20: StyledTextFollower modifiers are not reachable
+  // through the API (not listed, not found by name). Comp.modifiersVisible
+  // simulates a build where they are.
+  visible(t) { return t.type !== 'StyledTextFollower' || Comp.modifiersVisible; }
   GetToolList(_sel, type) {
-    const list = Object.values(this.tools).filter((t) => !type || t.type === type);
+    const list = Object.values(this.tools).filter((t) => this.visible(t) && (!type || t.type === type));
     return Object.fromEntries(list.map((t, i) => [i + 1, t]));
   }
-  FindTool(name) { return this.tools[name] || null; }
+  FindTool(name) { const t = this.tools[name]; return t && this.visible(t) ? t : null; }
+  /** Lua text in the shape Resolve exports (.comp). */
+  toLua() {
+    const T = this.tools.Template;
+    const F = this.tools.Follower1;
+    const parts = [];
+    if (T) parts.push(`\t\tTemplate = TextPlus {\n\t\t\tInputs = {\n\t\t\t\tStyledText = Input { ${F ? 'SourceOp = "Follower1", Source = "StyledText",' : `Value = ${luaString(T.inputs.StyledText)},`} },\n\t\t\t},\n\t\t},`);
+    if (F) parts.push(`\t\tFollower1 = StyledTextFollower {\n\t\t\tInputs = {\n\t\t\t\tText = Input {\n\t\t\t\t\tValue = StyledText {\n\t\t\t\t\t\tValue = ${luaString(F.inputs.Text)}\n\t\t\t\t\t},\n\t\t\t\t},\n\t\t\t},\n\t\t},`);
+    if (!T) parts.push('\t\tTransform1 = Transform { },');
+    return `Composition {\n\tCurrentTime = 0,\n\tTools = ordered() {\n${parts.join('\n')}\n\t},\n}\n`;
+  }
+  static fromLua(lua) {
+    const wiring = /StyledTextFollower/.test(lua) ? 'follower' : /TextPlus/.test(lua) ? 'direct' : 'none';
+    return new Comp(wiring, readCompText(lua));
+  }
   /** What the viewer would show (test helper). */
   renderedText() { return this.tools.Template ? this.tools.Template.GetInput('StyledText') : null; }
 }
@@ -75,7 +94,8 @@ class TimelineItem {
   constructor({ name, start, end, leftOffset = 0, mpi = null, fusion = false, text = null, sourceStartTime = null }) {
     Object.assign(this, { name, start, end, leftOffset, mpi, sourceStartTimeOverride: sourceStartTime });
     this.uid = nextId('item');
-    this.comp = fusion ? new Comp(mpi && mpi.wiring, mpi && mpi.name) : null;
+    this.comps = fusion ? [{ name: 'Composition 1', comp: new Comp(mpi && mpi.wiring, mpi && mpi.name) }] : [];
+    this.active = 0;
     if (text !== null) this.text = text;
   }
   GetName() { return this.text || this.name; }
@@ -95,8 +115,28 @@ class TimelineItem {
     return this.mpi ? this.leftOffset / Number(this.mpi.props.FPS) : 0;
   }
   GetMediaPoolItem() { return this.mpi; }
-  GetFusionCompCount() { return this.comp ? 1 : 0; }
-  GetFusionCompByIndex(i) { return i === 1 ? this.comp : null; }
+  get comp() { return this.comps[this.active] ? this.comps[this.active].comp : null; }
+  GetFusionCompCount() { return this.comps.length; }
+  GetFusionCompByIndex(i) { return this.comps[i - 1] ? this.comps[i - 1].comp : null; }
+  GetFusionCompNameList() { return this.comps.map((c) => c.name); }
+  ExportFusionComp(file, i) {
+    const c = this.comps[i - 1];
+    if (!c) return false;
+    fs.writeFileSync(file, c.comp.toLua());
+    return true;
+  }
+  ImportFusionComp(file) {
+    if (!fs.existsSync(file)) return null;
+    const comp = Comp.fromLua(fs.readFileSync(file, 'utf8'));
+    this.comps.push({ name: `Composition ${this.comps.length + 1}`, comp });
+    return comp;
+  }
+  LoadFusionCompByName(name) {
+    const i = this.comps.findIndex((c) => c.name === name);
+    if (i < 0) return null;
+    this.active = i;
+    return this.comps[i].comp;
+  }
   GetSpeed() { return { Percentage: 100 }; }
 }
 

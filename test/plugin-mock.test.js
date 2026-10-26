@@ -194,8 +194,11 @@ test('styled captions: no timeline copy by default, exact removal, text diagnost
   const p = await ok(router, 'captions.prepare', { source: AUDIO_SRC });
   const r = await ok(router, 'captions.applyStyled', { previewId: p.previewId, styleId: styles.find((x) => x.name === 'Smooth Word Up').id, confirm: true });
   assert.equal(fake.project.timelines.length, 1, 'no timeline copy');
-  assert.equal(r.textDebug.via, 'follower');
+  // Follower nodes are not reachable on 21.0.0b20 (mocked): words go in via an edited composition.
+  assert.equal(r.textDebug.via, 'comp-file');
+  assert.equal(r.textDebug.target, 'follower');
   assert.equal(r.textDebug.readBack, p.cues[0].text);
+  assert.deepEqual(tl.tracks.video[1].map((i) => i.comp.renderedText()), p.cues.map((c) => c.text));
   assert.equal(tl.tracks.video.length, 2);
   const rm = await ok(router, 'captions.removePlaced', { placementId: r.placementId, confirm: true });
   assert.equal(rm.removed, p.cues.length);
@@ -328,7 +331,7 @@ test('style list hides non-text items and labels animated presets (read from the
   assert.deepEqual(r.hidden.map((x) => x.name), ['slow zoomout']);
 });
 
-test('follower found by name from the .drb when the API does not list modifiers', async () => {
+test('follower text set even when the API does not list modifiers (composition fallback)', async () => {
   const { router, dir, tl } = setup();
   tl.minLength = 250;
   const file = path.join(dir, 'Styles.drb');
@@ -347,6 +350,47 @@ test('follower found by name from the .drb when the API does not list modifiers'
     assert.equal(tl.tracks.video[r.trackIndex - 1][0].comp.renderedText(), preview.cues[0].text);
   } finally {
     Comp.prototype.GetToolList = orig;
+  }
+});
+
+test('when follower nodes ARE reachable, the direct API route is used', async () => {
+  const { router, dir, tl } = setup();
+  tl.minLength = 250;
+  const file = path.join(dir, 'Styles.drb');
+  fs.writeFileSync(file, 'opaque');
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const { styles } = await ok(router, 'assets.captionStyles');
+  const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) } });
+  const { Comp } = require('./helpers/fake-resolve');
+  Comp.modifiersVisible = true;
+  try {
+    const r = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles.find((x) => x.name === 'Smooth Word Up').id, limit: 1, confirm: true });
+    assert.equal(r.textDebug.via, 'follower');
+    assert.equal(tl.tracks.video[r.trackIndex - 1][0].comp.renderedText(), preview.cues[0].text);
+  } finally {
+    Comp.modifiersVisible = false;
+  }
+});
+
+test('composition fallback reports honestly when Resolve rejects the import', async () => {
+  const { router, dir, tl } = setup();
+  tl.minLength = 250;
+  const file = path.join(dir, 'Styles.drb');
+  fs.writeFileSync(file, 'opaque');
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const { styles } = await ok(router, 'assets.captionStyles');
+  const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) } });
+  const { TimelineItem } = require('./helpers/fake-resolve');
+  const orig = TimelineItem.prototype.ImportFusionComp;
+  TimelineItem.prototype.ImportFusionComp = () => null;
+  try {
+    const r = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles.find((x) => x.name === 'Smooth Word Up').id, limit: 1, confirm: true });
+    assert.equal(r.textFailures.length, 1);
+    assert.match(r.textFailures[0].reason, /did not accept the edited composition/);
+  } finally {
+    TimelineItem.prototype.ImportFusionComp = orig;
   }
 });
 
