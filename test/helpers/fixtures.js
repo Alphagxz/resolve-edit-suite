@@ -74,4 +74,31 @@ const TEXT_PLUS_SETTING = `{
 	},
 }`;
 
-module.exports = { tmpDir, writeZip, writeWav, TEXT_PLUS_SETTING };
+/**
+ * Build a CompositionBA hex string in the layout measured on a real Resolve
+ * 20.3 .drb: [4-byte length][zlib(header text + [4 bytes] + zlib(tool graph))].
+ */
+function makeCompositionBA(tools, { width = 2160, height = 3840, rate = 24 } = {}) {
+  const header = Buffer.from(`Composition { CurrentTime = 0, Prefs = { Comp = { FrameFormat = { Width = ${width}, Height = ${height}, Rate = ${rate}, }, } }, Compressed = true, }`, 'latin1');
+  const outer = Buffer.concat([Buffer.from([0, 0, 0, 1]), header, Buffer.from([0, 0, 0, 0]), zlib.deflateSync(Buffer.from(tools))]);
+  const inner = zlib.deflateSync(outer);
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(outer.length);
+  return Buffer.concat([len, inner]).toString('hex');
+}
+
+const TOOLS_FOLLOWER = '{ Template = TextPlus { Inputs = { StyledText = Input { SourceOp = "Follower1", Source = "StyledText", }, }, }, Follower1 = StyledTextFollower { Inputs = { Text = Input { Value = StyledText { Value = "Smooth Word Up" }, }, }, }, MediaOut1 = MediaOut { } }';
+const TOOLS_DIRECT = '{ Template = TextPlus { Inputs = { StyledText = Input { Value = "Glitch Text", }, }, }, MediaOut1 = MediaOut { } }';
+const TOOLS_NONE = '{ Transform1 = Transform { }, MediaOut1 = MediaOut { } }';
+
+/** A .drb with the real bin-export layout and generator items carrying compositions. */
+function writeBinExport(file, folder, items) {
+  const el = items.map(([name, tools]) => `  <Element>\n   <Sm2MpGenerator DbId="${name}-id">\n    <Name>${name}</Name>\n    <CompositionTable><Sm2TiCompositionTable DbId="c"><CompositionBA>${makeCompositionBA(tools)}</CompositionBA></Sm2TiCompositionTable></CompositionTable>\n   </Sm2MpGenerator>\n  </Element>`).join('\n');
+  writeZip(file, {
+    'project.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<!--DbAppVer="20.3.0.0010" DbPrjVer="15"-->\n<SM_Project DbId="x"></SM_Project>',
+    [`MediaPool/Master/000_${folder}/MpFolder.xml`]: `<Sm2MpFolder DbId="f"><Name>${folder}</Name><MediaVec>\n${el}\n</MediaVec></Sm2MpFolder>`,
+    'MediaPool/Master/MpFolder.xml': '<Sm2MpFolder DbId="m"><Name>Master</Name></Sm2MpFolder>',
+  });
+}
+
+module.exports = { tmpDir, writeZip, writeWav, TEXT_PLUS_SETTING, makeCompositionBA, writeBinExport, TOOLS_FOLLOWER, TOOLS_DIRECT, TOOLS_NONE };

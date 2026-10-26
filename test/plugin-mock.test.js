@@ -11,7 +11,7 @@ const path = require('path');
 const { createRouter } = require('../plugin/router');
 const { createStorage } = require('../plugin/services/storage');
 const { createFakeResolve, MediaPoolItem, Timeline, TimelineItem } = require('./helpers/fake-resolve');
-const { tmpDir, writeWav } = require('./helpers/fixtures');
+const { tmpDir, writeWav, writeBinExport, TOOLS_FOLLOWER, TOOLS_DIRECT, TOOLS_NONE } = require('./helpers/fixtures');
 
 function setup(opts) {
   const fake = createFakeResolve(opts);
@@ -152,7 +152,7 @@ test('caption preset: validate, import once, dedupe, detect move, relink', async
   assert.equal(second.skipped, true);
   assert.equal(fake.project.mediaPool.root.subs.length, 1);
   const styles = await ok(router, 'assets.captionStyles');
-  assert.deepEqual(styles.styles.map((s) => s.name), ['Pop Caption', 'Pop Caption Highlight']);
+  assert.deepEqual(styles.styles.map((s) => s.name), ['Smooth Word Up', 'Glitch Text', 'slow zoomout']);
 
   const moved = path.join(dir, 'moved.drb');
   fs.renameSync(file, moved);
@@ -213,7 +213,7 @@ test('captions: preview, gated SRT placement, verified after diagnostics test', 
   assert.equal(fake.project.current, tl, 'original timeline still current after backup');
 });
 
-test('captions: styled placement from imported preset, test-one-first then batch', async () => {
+test('captions: styled placement sets the words on animated (follower) and direct presets', async () => {
   const { router, dir, tl } = setup();
   tl.minLength = 250;
   const file = path.join(dir, 'Styles.drb');
@@ -221,16 +221,67 @@ test('captions: styled placement from imported preset, test-one-first then batch
   await ok(router, 'assets.setPreset', { path: file });
   await ok(router, 'assets.importBin', { confirm: true });
   const { styles } = await ok(router, 'assets.captionStyles');
+  const follower = styles.find((s) => s.name === 'Smooth Word Up');
+  const direct = styles.find((s) => s.name === 'Glitch Text');
   const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) }, options: { maxWordsPerCue: 2, emphasis: { words: ['second'] } } });
-  const one = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles[0].id, limit: 1, confirm: true });
+  const one = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: follower.id, limit: 1, confirm: true });
   assert.equal(one.verify.ok, true, JSON.stringify(one.verify));
-  assert.equal(one.textFailures.length, 0);
-  const all = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles[0].id, emphasisStyleId: styles[1].id, confirm: true });
+  assert.deepEqual(one.textFailures, [], 'follower preset text set');
+  const placedOne = tl.tracks.video[one.trackIndex - 1][0];
+  assert.equal(placedOne.comp.renderedText(), preview.cues[0].text, 'the viewer shows the new words, not the preset name');
+  const all = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: follower.id, emphasisStyleId: direct.id, confirm: true });
   assert.equal(all.verify.ok, true, JSON.stringify(all.verify));
+  assert.deepEqual(all.textFailures, []);
   const track = tl.tracks.video[all.trackIndex - 1];
-  assert.equal(track.length, preview.cues.length);
-  assert.deepEqual(track.map((i) => i.comp.tool.inputs.StyledText), preview.cues.map((c) => c.text));
-  assert.ok(track.some((i) => i.mpi.name === 'Pop Caption Highlight'));
+  assert.deepEqual(track.map((i) => i.comp.renderedText()), preview.cues.map((c) => c.text));
+  assert.ok(track.some((i) => i.mpi.name === 'Glitch Text'), 'emphasis captions use the direct preset');
+});
+
+test('style list hides non-text items and labels animated presets (read from the .drb)', async () => {
+  const { router, dir } = setup();
+  const file = path.join(dir, 'Styles.drb');
+  writeBinExport(file, 'Styles', [['Smooth Word Up', TOOLS_FOLLOWER], ['Glitch Text', TOOLS_DIRECT], ['slow zoomout', TOOLS_NONE]]);
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const r = await ok(router, 'assets.captionStyles');
+  assert.deepEqual(r.styles.map((x) => [x.name, x.wiring]), [['Smooth Word Up', 'follower'], ['Glitch Text', 'direct']]);
+  assert.deepEqual(r.hidden.map((x) => x.name), ['slow zoomout']);
+});
+
+test('follower found by name from the .drb when the API does not list modifiers', async () => {
+  const { router, dir, tl } = setup();
+  tl.minLength = 250;
+  const file = path.join(dir, 'Styles.drb');
+  writeBinExport(file, 'Styles', [['Smooth Word Up', TOOLS_FOLLOWER], ['Glitch Text', TOOLS_DIRECT], ['slow zoomout', TOOLS_NONE]]);
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const { styles } = await ok(router, 'assets.captionStyles');
+  const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) } });
+  // Simulate a Fusion bridge whose GetToolList omits modifier tools.
+  const { Comp } = require('./helpers/fake-resolve');
+  const orig = Comp.prototype.GetToolList;
+  Comp.prototype.GetToolList = function (sel, type) { return type === 'StyledTextFollower' ? {} : orig.call(this, sel, type); };
+  try {
+    const r = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles[0].id, limit: 1, confirm: true });
+    assert.deepEqual(r.textFailures, []);
+    assert.equal(tl.tracks.video[r.trackIndex - 1][0].comp.renderedText(), preview.cues[0].text);
+  } finally {
+    Comp.prototype.GetToolList = orig;
+  }
+});
+
+test('a non-text preset reports clearly instead of claiming success', async () => {
+  const { router, dir, tl } = setup();
+  tl.minLength = 250;
+  const file = path.join(dir, 'Styles.drb');
+  fs.writeFileSync(file, 'opaque');
+  await ok(router, 'assets.setPreset', { path: file });
+  await ok(router, 'assets.importBin', { confirm: true });
+  const { styles } = await ok(router, 'assets.captionStyles');
+  const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) } });
+  const r = await ok(router, 'captions.applyStyled', { previewId: preview.previewId, styleId: styles.find((s) => s.name === 'slow zoomout').id, limit: 1, confirm: true });
+  assert.equal(r.textFailures.length, 1);
+  assert.match(r.textFailures[0].reason, /not a text preset/);
 });
 
 test('rough cut: analyse real WAV, review markers, build verified new timeline, original untouched', async () => {

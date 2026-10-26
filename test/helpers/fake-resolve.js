@@ -16,13 +16,37 @@ let uid = 0;
 const nextId = (p) => `${p}-${++uid}`;
 
 class Tool {
-  constructor() { this.inputs = { StyledText: 'Caption' }; }
-  SetInput(k, v) { this.inputs[k] = v; return true; }
-  GetInput(k) { return this.inputs[k]; }
+  constructor(type, inputs) { this.type = type; this.inputs = { ...inputs }; this.drivenBy = {}; }
+  SetInput(k, v) {
+    if (this.drivenBy[k]) return false; // connected input: Fusion ignores the write
+    this.inputs[k] = v;
+    return true;
+  }
+  GetInput(k) { return this.drivenBy[k] ? this.drivenBy[k].tool.GetInput(this.drivenBy[k].input) : this.inputs[k]; }
 }
+/**
+ * Mirrors the MotionText Pro wirings decoded from the real .drb:
+ *   'follower' Text+ StyledText <- StyledTextFollower.Text (word animations)
+ *   'direct'   Text+ StyledText holds the words
+ *   'none'     no Text+ (zoom / adjustment clips)
+ */
 class Comp {
-  constructor() { this.tool = new Tool(); }
-  GetToolList(_sel, type) { return type === 'TextPlus' ? { 1: this.tool } : {}; }
+  constructor(wiring = 'direct', presetText = 'Caption') {
+    this.tools = {};
+    if (wiring === 'none') { this.tools.Transform1 = new Tool('Transform', {}); return; }
+    this.tools.Template = new Tool('TextPlus', { StyledText: presetText });
+    if (wiring === 'follower') {
+      this.tools.Follower1 = new Tool('StyledTextFollower', { Text: presetText });
+      this.tools.Template.drivenBy.StyledText = { tool: this.tools.Follower1, input: 'Text' };
+    }
+  }
+  GetToolList(_sel, type) {
+    const list = Object.values(this.tools).filter((t) => !type || t.type === type);
+    return Object.fromEntries(list.map((t, i) => [i + 1, t]));
+  }
+  FindTool(name) { return this.tools[name] || null; }
+  /** What the viewer would show (test helper). */
+  renderedText() { return this.tools.Template ? this.tools.Template.GetInput('StyledText') : null; }
 }
 
 class MediaPoolItem {
@@ -51,7 +75,7 @@ class TimelineItem {
   constructor({ name, start, end, leftOffset = 0, mpi = null, fusion = false, text = null, sourceStartTime = null }) {
     Object.assign(this, { name, start, end, leftOffset, mpi, sourceStartTimeOverride: sourceStartTime });
     this.uid = nextId('item');
-    this.comp = fusion ? new Comp() : null;
+    this.comp = fusion ? new Comp(mpi && mpi.wiring, mpi && mpi.name) : null;
     if (text !== null) this.text = text;
   }
   GetName() { return this.text || this.name; }
@@ -193,9 +217,9 @@ class MediaPool {
   ImportFolderFromFile(file) {
     if (!fs.existsSync(file)) return false;
     const f = new Folder(path.basename(file).replace(/\.drb$/i, ''));
-    const style = new MediaPoolItem('Pop Caption', { Type: 'Fusion Title', FPS: 25, Frames: 250 }, { fusionTitle: true });
-    const style2 = new MediaPoolItem('Pop Caption Highlight', { Type: 'Fusion Title', FPS: 25, Frames: 250 }, { fusionTitle: true });
-    f.clips.push(style, style2);
+    // Same three wirings as the real MotionText Pro presets (24 fps generators).
+    const gen = (name, wiring) => new MediaPoolItem(name, { Type: 'Generator', FPS: 25, Frames: 250 }, { fusionTitle: true, wiring });
+    f.clips.push(gen('Smooth Word Up', 'follower'), gen('Glitch Text', 'direct'), gen('slow zoomout', 'none'));
     this.root.subs.push(f);
     return true;
   }
@@ -273,4 +297,4 @@ function createFakeResolve({ version = [21, 1, 0, 14, ''], studio = true } = {})
   return { resolve, project, pm, MediaPoolItem, Timeline, TimelineItem };
 }
 
-module.exports = { createFakeResolve, MediaPoolItem, Timeline, TimelineItem };
+module.exports = { createFakeResolve, MediaPoolItem, Timeline, TimelineItem, Comp };
