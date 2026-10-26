@@ -1,0 +1,17 @@
+{
+  "name": "resolve-edit-suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Editing assistant Workflow Integration plugin for DaVinci Resolve Studio",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "sniff": "node tools/sniff-asset.js",
+    "install-plugin": "node tools/install.js",
+    "uninstall-plugin": "node tools/uninstall.js",
+    "test:ui": "node test/ui/smoke.js"
+  }
+}
