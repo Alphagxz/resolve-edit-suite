@@ -19,6 +19,7 @@ const subs = require('../core/subtitles');
 const { segmentWords, estimateWordTimings } = require('../core/segmenter');
 const { finalizeCues, validateCues, cuesToRelative } = require('../core/cues');
 const { captionLayout } = require('../core/layout');
+const { patchCompText, readCompText } = require('../core/comp-text');
 const { SuiteError } = require('../resolve/adapter');
 const { isAvailable } = require('../resolve/capabilities');
 const { timelineContext, trackItems, clipProperty, mediaRate, listOf } = require('./resolve-reads');
@@ -411,7 +412,39 @@ const textOf = (v) => (v && typeof v === 'object' && 'Value' in v ? v.Value : v)
  * Text+ StyledText holds the words. Every write is read back.
  * @param {object} [hint] wiring from the .drb inspection: { wiring, followers }
  */
-async function setCaptionText(a, item, text, hint = null) {
+/**
+ * Fallback that needs no access to individual Fusion nodes: export the placed
+ * item's composition (Resolve writes the file), replace the words in it,
+ * import it back as a new composition, make it active, and verify by exporting
+ * again. Uses only documented TimelineItem methods (21.0 README).
+ */
+async function setTextViaCompFile(a, item, text, dir) {
+  const workDir = path.join(dir, 'comps');
+  fs.mkdirSync(workDir, { recursive: true });
+  const base = path.join(workDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+  const files = [`${base}-orig.comp`, `${base}.comp`, `${base}-check.comp`];
+  try {
+    const exported = await a.call('TimelineItem', item, 'ExportFusionComp', files[0], 1);
+    if (!exported || !fs.existsSync(files[0])) return { ok: false, reason: 'Resolve could not export the preset\'s composition (ExportFusionComp).' };
+    const patched = patchCompText(fs.readFileSync(files[0], 'utf8'), text);
+    if (!patched.ok) return { ok: false, reason: patched.reason };
+    fs.writeFileSync(files[1], patched.lua);
+    const before = listOf(await a.call('TimelineItem', item, 'GetFusionCompNameList'));
+    const imported = await a.call('TimelineItem', item, 'ImportFusionComp', files[1]);
+    if (!imported) return { ok: false, reason: 'Resolve did not accept the edited composition (ImportFusionComp).' };
+    const after = listOf(await a.call('TimelineItem', item, 'GetFusionCompNameList'));
+    const newName = after.find((n) => !before.includes(n)) || after[after.length - 1];
+    if (!(await a.call('TimelineItem', item, 'LoadFusionCompByName', newName))) return { ok: false, reason: `Resolve imported the edited composition but did not make "${newName}" active.` };
+    await a.call('TimelineItem', item, 'ExportFusionComp', files[2], after.indexOf(newName) + 1);
+    const readBack = fs.existsSync(files[2]) ? readCompText(fs.readFileSync(files[2], 'utf8')) : null;
+    const debug = { path: 'comp-file', target: patched.target, readBack };
+    return readBack === text ? { ok: true, via: 'comp-file', debug } : { ok: false, reason: `After loading the edited composition, Resolve's copy reads "${readBack}".`, debug };
+  } finally {
+    for (const f of files) fs.rmSync(f, { force: true });
+  }
+}
+
+async function setCaptionText(a, item, text, hint = null, opts = {}) {
   const count = await a.call('TimelineItem', item, 'GetFusionCompCount');
   if (!count) return { ok: false, reason: 'The placed preset has no Fusion composition, so its text cannot be set through the API.' };
   const comp = await a.call('TimelineItem', item, 'GetFusionCompByIndex', 1);
@@ -425,6 +458,8 @@ async function setCaptionText(a, item, text, hint = null) {
     }
   }
   if (!followers.length && hint && hint.wiring === 'follower') {
+    // Observed on 21.0.0b20: follower modifiers are not reachable through the API.
+    if (opts.dir) return setTextViaCompFile(a, item, text, opts.dir);
     return { ok: false, reason: 'This is an animated (follower) preset, but its animation node could not be reached through the API, so its words were not changed.' };
   }
   if (followers.length) {
@@ -432,12 +467,14 @@ async function setCaptionText(a, item, text, hint = null) {
     const back = [];
     for (const f of followers) back.push(textOf(await a.call('Tool', f, 'GetInput', 'Text')));
     const debug = { path: 'follower', textTools: textTools.length, followers: followers.length, readBack: back[0] };
+    if (!back.every((b) => b === text) && opts.dir) return setTextViaCompFile(a, item, text, opts.dir);
     return back.every((b) => b === text) ? { ok: true, via: 'follower', debug } : { ok: false, reason: `Animated text read back as "${back.find((b) => b !== text)}" after setting it.`, debug };
   }
   const tool = textTools[0];
   await a.call('Tool', tool, 'SetInput', 'StyledText', text);
   const back = textOf(await a.call('Tool', tool, 'GetInput', 'StyledText'));
   const debug = { path: 'text+', textTools: textTools.length, followers: 0, readBack: back };
+  if (back !== text && opts.dir) return setTextViaCompFile(a, item, text, opts.dir);
   return back === text ? { ok: true, via: 'text+', debug } : { ok: false, reason: `Text read back as "${back}" after setting it (its text may be driven by another node).`, debug };
 }
 
@@ -493,7 +530,7 @@ async function applyStyled(a, deps, preview, req, task) {
     for (let j = 0; j < chunk.length; j++) {
       const item = placedItems[j];
       if (!item) { textResults.push({ id: chunk[j].cue.id, ok: false, reason: 'Not placed.' }); continue; }
-      textResults.push({ id: chunk[j].cue.id, ...(await setCaptionText(a, item, chunk[j].cue.text, hints.get(chunk[j].info.mediaPoolItem))) });
+      textResults.push({ id: chunk[j].cue.id, ...(await setCaptionText(a, item, chunk[j].cue.text, hints.get(chunk[j].info.mediaPoolItem), { dir: deps.storage.outDir })) });
     }
   }
   task.progress(90, 'Verifying');
