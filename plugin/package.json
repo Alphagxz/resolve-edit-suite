@@ -1,0 +1,7 @@
+{
+  "name": "edit-suite-resolve-panel",
+  "version": "0.1.0",
+  "private": true,
+  "main": "main.js",
+  "description": "Edit Suite Workflow Integration panel for DaVinci Resolve Studio"
+}

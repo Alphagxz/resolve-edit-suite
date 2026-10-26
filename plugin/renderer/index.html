@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Edit Suite</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo" aria-hidden="true"></span><div><strong>Edit Suite</strong><small id="app-version"></small></div></div>
+      <nav id="nav" aria-label="Modules">
+        <button data-view="overview" class="active">Overview</button>
+        <div class="nav-group">Edit</div>
+        <button data-view="captions">Captions</button>
+        <button data-view="roughcut">Rough Cut</button>
+        <button data-view="motion">Motion Graphics</button>
+        <div class="nav-group">System</div>
+        <button data-view="setup">Asset Setup</button>
+        <button data-view="diagnostics">Diagnostics</button>
+        <button data-view="settings">Settings</button>
+      </nav>
+      <div class="sidebar-foot" id="conn-status">Connecting…</div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div id="summary-chips" class="chips" aria-live="polite"></div>
+        <button id="refresh-summary" class="ghost" title="Re-read project and timeline from Resolve">Refresh</button>
+      </header>
+      <div id="init-error" class="banner error hidden"></div>
+      <section id="view" class="view"></section>
+    </main>
+  </div>
+
+  <div id="tasks" class="tasks" aria-live="polite"></div>
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+
+  <dialog id="confirm">
+    <form method="dialog">
+      <h3 id="confirm-title"></h3>
+      <div id="confirm-body"></div>
+      <menu><button value="cancel" class="ghost">Cancel</button><button value="ok" id="confirm-ok" class="primary">Continue</button></menu>
+    </form>
+  </dialog>
+
+  <script src="ui.js"></script>
+  <script src="views.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
