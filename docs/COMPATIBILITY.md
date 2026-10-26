@@ -4,7 +4,8 @@
 
 | Resolve | Edition | OS | Status | Basis |
 |---|---|---|---|---|
-| 21.1.x | Studio | macOS / Windows | **Primary target — untested** | Third-party live tests on 21.1.0.14; all 21.1-only features feature-detected |
+| 21.0.0 beta 20 | Studio | macOS | **Current test build — partially probed** | 2026-10-26 discovery: external scripting OK; Resolve/ProjectManager/Project/MediaPool/Folder methods present; Timeline/TimelineItem/MediaPoolItem not yet probed; 21.1-only features unavailable. Betas can change before release |
+| 21.1.x | Studio | macOS / Windows | **Target after the user upgrades — untested** | Third-party live tests on 21.1.0.14; all 21.1-only features feature-detected |
 | 21.0.4+ | Studio | macOS / Windows | Expected to work without 21.1 features (word-timed transcription, speed read, fades, transitions unavailable) | Version floors in `capabilities.js` |
 | 20.x / 19.1.x | Studio | macOS / Windows | Declared minimum candidate (19.0.2: sandboxed Electron sample) — untested | Third-party live tests of legacy methods on 19.1.3 / 20.3.2 |
 | < 19.0.2 | any | any | Not supported (pre-sandbox Workflow Integration runtime) | |

@@ -368,11 +368,13 @@
       };
       body.replaceChildren(
         h('div.card',
-          h('h2', 'Rayan Herrick caption presets'),
+          h('h2', 'Caption preset pack (e.g. MotionText Pro)'),
           !rec ? h('p.muted', 'Locate the caption preset file you were supplied. The suite inspects its real format before deciding how to import it.') : h('div',
             h('div.row', h('span.mono', rec.path), h('span.badge.' + (st.status === 'ok' ? 'ok' : 'err'), st.status)),
             h('div.row', { style: 'margin-top:6px' }, h('span.badge.info', rec.kind), h('span.badge' + (rec.confidence === 'content' ? '.ok' : '.warn'), rec.confidence === 'content' ? 'identified by content' : 'identified by extension only')),
             h('div.notice' + (rec.kind === 'resolve-bin-export' ? '' : '.warn'), kindHelp[rec.kind] || 'Unrecognised format; the suite will not import it. See docs/ASSET_SETUP.md.'),
+            rec.contents ? h('div.small.muted', { style: 'margin-top:6px' }, `Written by Resolve ${rec.contents.writtenBy || 'unknown version'}. Bins: ${rec.contents.binFolders.join(', ')}`) : null,
+            rec.contents && rec.contents.basis ? h('div.small.faint', rec.contents.basis) : null,
             list(rec.warnings), st.message ? h('div.notice.err', st.message) : null),
           h('div.row', { style: 'margin-top:10px' },
             h('button.secondary', { onclick: () => choose(false) }, rec ? 'Choose a different file…' : 'Locate preset file…'),

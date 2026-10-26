@@ -53,6 +53,22 @@ test('capabilities on an older / free build are honest', async () => {
   assert.equal(s.capabilities['item.fades'].status, 'unavailable');
 });
 
+test('capabilities on 21.0.0 beta 20 (the current test build)', async () => {
+  const { router } = setup({ version: [21, 0, 0, 20, 'b'] });
+  let s = await ok(router, 'project.summary');
+  assert.equal(s.capabilities['captions.transcription'].status, 'unavailable', '21.1-only');
+  assert.equal(s.capabilities['item.fades'].status, 'unavailable', '21.1-only');
+  assert.equal(s.capabilities['media.importBin'].status, 'available');
+  // reported from 21.0.4: below the floor it waits for the scratch test instead of being refused
+  assert.equal(s.capabilities['captions.srtTrack'].status, 'needs-verification');
+  assert.ok(s.capabilities['captions.srtTrack'].reasons.some((r) => /older/.test(r)));
+  const t = await ok(router, 'diag.testSubtitles', { confirm: true });
+  assert.equal(t.ok, true);
+  s = await ok(router, 'project.summary');
+  assert.equal(s.capabilities['captions.srtTrack'].status, 'available');
+  assert.equal(s.capabilities['captions.srtTrack'].evidence, 'verified-here');
+});
+
 test('writes require confirmation', async () => {
   const { router } = setup();
   const r = await router.invoke('assets.importBin', {});
@@ -63,14 +79,14 @@ test('writes require confirmation', async () => {
 
 test('caption preset: validate, import once, dedupe, detect move, relink', async () => {
   const { router, dir, fake } = setup();
-  const file = path.join(dir, 'Rayan Herrick Captions.drb');
+  const file = path.join(dir, 'MotionText Pro.drb');
   fs.writeFileSync(file, Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 9, 9, 9, 9]));
   const set = await ok(router, 'assets.setPreset', { path: file });
   assert.equal(set.record.kind, 'resolve-bin-export');
   assert.equal(set.record.confidence, 'extension');
   const first = await ok(router, 'assets.importBin', { confirm: true });
   assert.equal(first.skipped, false);
-  assert.deepEqual(first.folders, ['Rayan Herrick Captions']);
+  assert.deepEqual(first.folders, ['MotionText Pro']);
   const second = await ok(router, 'assets.importBin', { confirm: true });
   assert.equal(second.skipped, true);
   assert.equal(fake.project.mediaPool.root.subs.length, 1);

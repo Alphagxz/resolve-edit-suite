@@ -28,6 +28,7 @@ function setCaptionPreset(storage, file) {
     confidence: info.confidence,
     recommendedImport: info.recommendedImport,
     warnings: info.warnings,
+    contents: info.details && info.details.binFolders ? { binFolders: info.details.binFolders, writtenBy: info.details.writtenBy || null, basis: info.details.basis || null } : null,
     validatedAt: new Date().toISOString(),
   };
   storage.updateSettings((s) => ({ ...s, captionPreset: record }));

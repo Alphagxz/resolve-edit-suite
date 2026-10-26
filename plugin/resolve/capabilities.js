@@ -104,9 +104,16 @@ function evaluateCapabilities(env, verified = {}) {
   for (const f of FEATURES) {
     const reasons = [];
     let status = 'available';
+    const v = verified[f.id];
     if (!env.version || cmpVersion(env.version, f.minVersion) < 0) {
-      status = 'unavailable';
-      reasons.push(`Requires Resolve ${f.minVersion.join('.')} or newer.`);
+      if (f.requiresVerification && env.version) {
+        // The floor is only where the behaviour was first REPORTED; a scratch
+        // test on this exact build is stronger evidence either way.
+        if (!(v && v.ok)) reasons.push(`Reported from Resolve ${f.minVersion.join('.')}; this build is older, so only the Diagnostics scratch test can enable it.`);
+      } else {
+        status = 'unavailable';
+        reasons.push(`Requires Resolve ${f.minVersion.join('.')} or newer.`);
+      }
     }
     if (f.studioOnly && env.isStudio === false) {
       status = 'unavailable';
@@ -130,7 +137,6 @@ function evaluateCapabilities(env, verified = {}) {
         reasons.push(`${objType}.${method} is not exposed by this Resolve build.`);
       }
     }
-    const v = verified[f.id];
     if (status === 'available' && v && v.ok === false) {
       status = 'failed-verification';
       reasons.push(`Scratch test failed on ${v.at}: ${v.detail}`);

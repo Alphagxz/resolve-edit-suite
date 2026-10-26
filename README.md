@@ -35,7 +35,7 @@ Projects, timelines (including Edit Suite backups and rough cuts, which are your
 ## Discovery (please run once)
 
 ```sh
-python3 tools/discover.py --preset "/path/to/Rayan Herrick Captions.drb"
+python3 tools/discover.py --preset "/path/to/MotionText Pro.drb"
 ```
 
 Read-only. Writes `edit-suite-discovery-<time>/` with the official docs from your install, the API surface per object and the real format of your preset file.

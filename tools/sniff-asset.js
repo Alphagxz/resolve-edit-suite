@@ -2,7 +2,7 @@
 'use strict';
 /**
  * Identify a caption preset / template file by content. Read-only.
- *   node tools/sniff-asset.js "/path/to/Rayan Herrick Captions.drb"
+ *   node tools/sniff-asset.js "/path/to/MotionText Pro.drb"
  */
 const { identifyAsset } = require('../plugin/core/assets');
 

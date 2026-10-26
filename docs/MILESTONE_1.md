@@ -47,6 +47,6 @@ Sound Design, B-Roll Assistant, Ad Builder, Reframe, Audio Polish, Project Organ
 
 ## What I need from you to continue
 
-1. The Rayan Herrick caption preset file (or the `discover.py` report with `--preset`).
-2. The `discover.py` output folder from your Resolve Studio 21.1 machine.
+1. ~~Caption preset file~~ — received: MotionText Pro (see DISCOVERY_REPORT.md §7).
+2. A second `discover.py` run on 21.0.0 beta 20 **with a timeline open** (Timeline/TimelineItem/MediaPoolItem not yet probed), plus `Scripting/README.txt`, the Workflow Integrations README and the sample `manifest.xml` from its `official-docs` folder.
 3. One run of Diagnostics › Calibrate and › Test subtitle import, with the saved report.

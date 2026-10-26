@@ -69,10 +69,36 @@ function classifyZipEntries(entries) {
   if (settings.length && names.some((n) => /(^|\/)(Edit|Fusion|Templates)\//i.test(n) || /\.setting$/i.test(n))) {
     return { kind: 'fusion-template-bundle', note: `${settings.length} Fusion template(s) inside`, settings };
   }
-  if (names.some((n) => /(^|\/)project\.xml$/i.test(n))) {
-    return { kind: 'resolve-project-archive', note: 'Contains project.xml — a Resolve project export (.drp-style), not a bin export.' };
+  // Resolve's XML archive layout. A real bin export (.drb, written by Resolve
+  // 20.3) contains project.xml + MediaPool/.../MpFolder.xml + SeqContainer/*.xml,
+  // so project.xml alone does NOT mean "project export": bin and project
+  // exports share this layout and are told apart by extension.
+  if (names.some((n) => /(^|\/)project\.xml$/i.test(n)) || names.some((n) => /^MediaPool\/.*MpFolder\.xml$/i.test(n))) {
+    return { kind: 'resolve-xml-archive', binFolders: binFoldersFromEntries(names), sequences: names.filter((n) => /^SeqContainer\/.+\.xml$/i.test(n)).length };
   }
   return null;
+}
+
+/** Bin folder paths below the Media Pool master folder, from MpFolder.xml entry names. */
+function binFoldersFromEntries(names) {
+  return names
+    .map((n) => /^MediaPool\/Master\/(.+)\/MpFolder\.xml$/i.exec(n))
+    .filter(Boolean)
+    .map((m) => m[1].split('/').map((seg) => seg.replace(/^\d{3}_/, '')).join(' / '))
+    .sort();
+}
+
+/** Resolve version recorded in project.xml's header comment, e.g. DbAppVer="20.3.0.0010". */
+function writtenByVersion(file, entries) {
+  const pj = entries.find((e) => /(^|\/)project\.xml$/i.test(e.name));
+  if (!pj) return null;
+  try {
+    const head = readZipEntry(file, pj, 16 * 1024 * 1024).subarray(0, 512).toString('utf8');
+    const m = /DbAppVer="([^"]+)"/.exec(head);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -128,8 +154,13 @@ function identifyAsset(file) {
       }
       return { ...base, kind: 'fusion-template-bundle', confidence: 'content', recommendedImport: IMPORT.FUSION_INSTALL, details: { entryCount: entries.length, sample, templates } };
     }
-    if (cls && cls.kind === 'resolve-project-archive') {
-      return { ...base, kind: 'resolve-project-archive', confidence: 'content', recommendedImport: IMPORT.PROJECT, details: { entryCount: entries.length, sample } };
+    if (cls && cls.kind === 'resolve-xml-archive') {
+      const details = { entryCount: entries.length, sample, binFolders: cls.binFolders, sequences: cls.sequences, writtenBy: writtenByVersion(file, entries) };
+      const basis = 'Resolve XML archive confirmed by content; bin vs project decided by the file extension (both formats share this layout).';
+      if (ext === '.drb') return { ...base, kind: 'resolve-bin-export', confidence: 'content', recommendedImport: IMPORT.BIN, details: { ...details, basis } };
+      if (ext === '.drp') return { ...base, kind: 'resolve-project-archive', confidence: 'content', recommendedImport: IMPORT.PROJECT, details: { ...details, basis } };
+      warnings.push('Resolve XML archive without a .drb or .drp extension; cannot tell a bin export from a project export, so nothing will be imported.');
+      return { ...base, kind: 'resolve-archive-unknown', confidence: 'content', recommendedImport: IMPORT.NONE, details };
     }
     // A ZIP we do not recognise structurally: fall back to the extension, flagged.
     if (ext === '.drb') {
@@ -160,4 +191,4 @@ function identifyAsset(file) {
   return { ...base, kind: 'unknown', confidence: 'unknown', recommendedImport: IMPORT.NONE, details: { magic: hex, extension: ext } };
 }
 
-module.exports = { IMPORT, identifyAsset, inspectFusionSetting, classifyZipEntries };
+module.exports = { IMPORT, identifyAsset, inspectFusionSetting, classifyZipEntries, binFoldersFromEntries };

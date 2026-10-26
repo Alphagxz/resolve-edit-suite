@@ -2,14 +2,14 @@
 
 The suite only **reads** your premium assets. It never edits, moves, re-encodes, renames or replaces them, and it never substitutes generic Text+ titles for your presets.
 
-## Rayan Herrick caption presets
+## Caption preset pack (MotionText Pro)
 
 1. Panel › **Asset Setup** › *Locate preset file…*. (Or from a terminal: `node tools/sniff-asset.js "<file>"`.)
 2. The file is identified by content. What you'll see:
 
 | Identified as | Meaning | What to do |
 |---|---|---|
-| Bin export (content or extension) | Media Pool bin export | *Import into current project*. Resolve imports it with its own bin importer; folder names and structure are preserved. A second import into the same project is skipped while those folders exist. |
+| Bin export | Media Pool bin export (a ZIP of Resolve XML with a `.drb` extension, like MotionText Pro, or an unrecognised `.drb`) | *Import into current project*. Resolve imports it with its own bin importer; folder names and structure are preserved. A second import into the same project is skipped while those folders exist. |
 | Resolve project archive (.drp / .dra) | A whole project, not a bin | **Do not import into your working project.** Migration: Project Manager › right-click › *Import Project* (or *Restore Project Archive* for .dra) → open it → select the caption folder in its Media Pool → right-click › *Export Bin…* → choose that .drb in Asset Setup. Your working project is untouched throughout. |
 | Fusion template bundle (.drfx) | Installable titles | Double-click the .drfx (Resolve installs it), restart Resolve; titles appear in **Motion Graphics**. |
 | Fusion setting (.setting) | Single title/macro | Copy into `Fusion/Templates/Edit/Titles/<pack>/` (paths below), restart Resolve. |

@@ -36,7 +36,7 @@ function seed() {
     'Edit/Titles/mKeynote Callouts/Zoom Box.setting': TEXT_PLUS_SETTING,
     'Edit/Effects/mKeynote Callouts/Glow Pop.setting': TEXT_PLUS_SETTING,
   });
-  const drb = path.join(dir, 'Rayan Herrick Captions.drb');
+  const drb = path.join(dir, 'MotionText Pro.drb');
   fs.writeFileSync(drb, 'opaque-bin-export');
   const storage = createStorage(path.join(dir, 'data'));
   storage.updateSettings((s) => ({ ...s, templateRoots: [tplRoot] }));

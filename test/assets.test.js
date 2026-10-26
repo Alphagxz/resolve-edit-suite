@@ -37,7 +37,7 @@ test('identifies files by content, not extension', () => {
   fs.writeFileSync(setting, TEXT_PLUS_SETTING);
   assert.equal(identifyAsset(setting).kind, 'fusion-setting');
 
-  const opaque = path.join(dir, 'Rayan Herrick Captions.drb');
+  const opaque = path.join(dir, 'Caption Pack.drb');
   fs.writeFileSync(opaque, Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 1, 2, 3, 4]));
   const o = identifyAsset(opaque);
   assert.equal(o.kind, 'resolve-bin-export');
@@ -47,6 +47,38 @@ test('identifies files by content, not extension', () => {
   const unknown = path.join(dir, 'thing.bin');
   fs.writeFileSync(unknown, Buffer.from([1, 2, 3]));
   assert.equal(identifyAsset(unknown).kind, 'unknown');
+});
+
+test('Resolve XML archives: real .drb bin-export layout is a bin, not a project', () => {
+  const dir = tmpDir();
+  // Entry layout of a real Resolve 20.3 bin export (names only; synthetic contents).
+  const layout = {
+    'project.xml': '<?xml version="1.0" encoding="UTF-8"?>\n<!--DbAppVer="20.3.0.0010" DbPrjVer="15"-->\n<SM_Project DbId="x"></SM_Project>',
+    'MediaPool/Master/000_Pack/000_Timeline/MpFolder.xml': '<Sm2MpFolder/>',
+    'MediaPool/Master/000_Pack/001_Text Animation/MpFolder.xml': '<Sm2MpFolder/>',
+    'MediaPool/Master/000_Pack/MpFolder.xml': '<Sm2MpFolder/>',
+    'MediaPool/Master/MpFolder.xml': '<Sm2MpFolder/>',
+    'SeqContainer/a.xml': '<Sm2SequenceContainer/>',
+  };
+  const drb = path.join(dir, 'Pack.drb');
+  writeZip(drb, layout);
+  const b = identifyAsset(drb);
+  assert.equal(b.kind, 'resolve-bin-export');
+  assert.equal(b.confidence, 'content');
+  assert.equal(b.recommendedImport, 'MediaPool.ImportFolderFromFile');
+  assert.equal(b.details.writtenBy, '20.3.0.0010');
+  assert.equal(b.details.sequences, 1);
+  assert.deepEqual(b.details.binFolders, ['Pack', 'Pack / Text Animation', 'Pack / Timeline']);
+
+  const drp = path.join(dir, 'Pack.drp');
+  writeZip(drp, layout);
+  assert.equal(identifyAsset(drp).kind, 'resolve-project-archive');
+
+  const bare = path.join(dir, 'Pack.zip');
+  writeZip(bare, layout);
+  const u = identifyAsset(bare);
+  assert.equal(u.kind, 'resolve-archive-unknown');
+  assert.equal(u.recommendedImport, null);
 });
 
 test('template catalogue reads folders and .drfx bundles, flags duplicates and insert support', () => {

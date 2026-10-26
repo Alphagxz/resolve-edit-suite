@@ -9,7 +9,7 @@ Date: 2026-10-26 · Target: DaVinci Resolve Studio 21.1
 | Installed Resolve version | **Not inspectable here** | Development ran in a headless Linux cloud container (Ubuntu 24.04, no GPU, no display, no Resolve, no Studio licence). |
 | Developer docs shipped with Resolve 21.1 (`Developer/Scripting/README.txt`, typed stub, Workflow Integration README) | **Not available here** | Only ship inside the installer. `tools/discover.py` copies them from your machine into its report folder. |
 | Official Workflow Integration sample (`Developer/Workflow Integrations/Examples/SamplePlugin`) | **Not available here** | The installer derives the manifest from *your* sample and copies `WorkflowIntegration.node` from it, so the runtime structure always comes from the installed version. |
-| Rayan Herrick caption preset file | **Not supplied** | Not in the working directory or in the connected Google Drive. Format is therefore **unknown**; the suite identifies it by content when you locate it (see §4). |
+| Caption preset pack | **Identified** (see §7) | The project's caption preset asset is **MotionText Pro (GFXLife)**. An earlier draft referred to a "Rayan Herrick" preset; no such asset exists. |
 | mKeynote templates | **Not supplied** | Catalogued at runtime from the Fusion Templates folders (see §5). |
 
 Because the primary evidence sources were unavailable, **every Resolve-facing behaviour in this milestone is unverified on 21.1 until it is run on a real install.** The design makes that explicit at runtime instead of assuming: capability probing, scratch-timeline calibration and verification after every write.
@@ -58,7 +58,7 @@ This is third-party evidence. It is recorded per feature in `plugin/resolve/capa
 
 ## 5. Premium assets — how they are handled without assuming a format
 
-**Caption preset file.** `core/assets.js` identifies files by content: ZIP structure (Fusion bundle with `.setting` entries vs `project.xml` project export), SQLite (refused: a database), Fusion Lua tables, XML, or unknown. A `.drb` that is not otherwise recognisable is reported as *"bin export — identified by extension only"*; import is still Resolve's own `ImportFolderFromFile`, and the result is verified by diffing Media Pool folders before/after. Project archives (.drp/.dra) are **refused for bin import** and routed to a manual migration (restore in Project Manager → export the caption bin as .drb). Path + SHA-256 are stored; re-imports into the same project are skipped while the folders exist; moved files are detected and can be relinked (identical bytes required, or explicit confirmation).
+**Caption preset file.** `core/assets.js` identifies files by content: ZIP structure (Fusion bundle with `.setting` entries vs Resolve XML archive — see §7 for why `project.xml` alone does not mean a project export), SQLite (refused: a database), Fusion Lua tables, XML, or unknown. A `.drb` that is not otherwise recognisable is reported as *"bin export — identified by extension only"*; import is still Resolve's own `ImportFolderFromFile`, and the result is verified by diffing Media Pool folders before/after. Project archives (.drp/.dra) are **refused for bin import** and routed to a manual migration (restore in Project Manager → export the caption bin as .drb). Path + SHA-256 are stored; re-imports into the same project are skipped while the folders exist; moved files are detected and can be relinked (identical bytes required, or explicit confirmation).
 
 **mKeynote templates.** Catalogued read-only from the Fusion Templates folders (user + system per OS, plus folders you add), including inside `.drfx` bundles: name, category (Titles / Generators / Effects / Transitions), pack, thumbnail (`.png` beside the `.setting`), Text+ presence, duplicate names. Titles are insertable by name (`InsertFusionTitleIntoTimeline`); duplicates are blocked from name insertion because the API cannot disambiguate.
 
@@ -68,6 +68,30 @@ This is third-party evidence. It is recorded per feature in `plugin/resolve/capa
 2. Run `node tools/install.js` (sudo on macOS / Administrator on Windows). It needs Resolve's own SamplePlugin folder.
 3. Restart Resolve → Workspace › Workflow Integrations › Edit Suite.
 4. In the panel: Diagnostics › **Calibrate** and **Test subtitle import** (each uses and removes a scratch timeline).
-5. Asset Setup › locate the caption preset file → import into the project.
+5. Asset Setup › locate the caption preset file (MotionText Pro) → import into the project.
 6. Optional: FFmpeg for Rough Cut on non-WAV media.
-7. **Please run `python3 tools/discover.py --preset "<your preset file>"` and send back the `edit-suite-discovery-*` folder.** It is read-only and is the evidence needed to move features from "third-party evidence" to "verified" and to finalise the 21.1 compatibility matrix.
+7. Run `python3 tools/discover.py --preset "<your preset file>"` (read-only) and send back the report — done once on 2026-10-26, see §7.
+
+## 7. First discovery run on the user's machine (2026-10-26)
+
+Run of `tools/discover.py` (SHA-256 `1fdd1a6d…ce69`) on the user's Mac, read-only.
+
+| Item | Result |
+|---|---|
+| Resolve | **DaVinci Resolve Studio 21.0.0 beta 20** (`[21, 0, 0, 20, 'b']`) — the current test build; 21.1 later |
+| OS | macOS (Darwin 25.4.0) |
+| Connection | External scripting works |
+| Method detection | `getattr` does **not** fabricate names on any probed object → `dir()`-based capability probing is reliable on this build |
+| Resolve, ProjectManager, Project, MediaPool, Folder | All methods the suite calls are present |
+| Timeline, TimelineItem, MediaPoolItem | **Not probed** — no timeline was open. Re-run with a timeline containing a clip on V1/A1 |
+| 21.1-only methods | `GetTranscription`, `GetType`, `GetSpeed`, `SetFades`, `GetFades`, `AddTransition` are absent from this build's shipped docs → reported unavailable by the version adapter |
+| Official docs | 20 files copied (Scripting, Workflow Integrations, Fusion Templates, OGraf HTML Templates, OpenFX, LUT, CodecPlugin, DaVinciCTL). Not yet reviewed here — the user still needs to send `Scripting/README.txt`, the Workflow Integrations README and the sample `manifest.xml` |
+| Fusion templates | 29 `.drfx` packs in the user Templates folder, none in the system folder |
+
+**Caption preset asset — MotionText Pro (GFXLife).** `MotionText Pro.drb`, 1,168,708 bytes, SHA-256 `fdf0a0c6…cc73a9`.
+
+- ZIP of Resolve XML, written by **Resolve 20.3.0.0010** (`DbAppVer` in `project.xml`).
+- Entries: `project.xml`, `MediaPool/Master/…/MpFolder.xml` for each bin, and two `SeqContainer/*.xml` sequences holding 39 and 51 Fusion compositions.
+- Bins: **MotionText Pro** › *Timeline* (2 items: "Text design template", "Text design"), *Text Animation* (39 animated text presets, e.g. Smooth Word Up, Glitch Text, Partial Blur), *Zoom* (2 items: "Adjustment Clip", "slow zoomout").
+- **Finding:** a genuine bin export contains `project.xml`. Milestone 1's classifier treated any ZIP with `project.xml` as a project archive and would have **refused** this file. Fixed: content now proves only "Resolve XML archive"; `.drb` → bin export (imported with `ImportFolderFromFile`), `.drp` → project archive (migration), anything else → not imported. Regression test uses the same entry layout with synthetic contents.
+- Not yet known: the media-pool clip type of the Text Animation items and whether their text is driven by a Text+ tool. Determined by the first "Place first caption (test)" run, which reports it instead of assuming.
