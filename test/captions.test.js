@@ -65,6 +65,19 @@ test('segmenter respects max chars/lines and balances lines', () => {
   for (const c of cues) for (const l of c.lines.slice(0, -1)) assert.ok(!/\b(a|the|to)$/i.test(l), l);
 });
 
+test('captions from a subtitle file never merge words across its entries', () => {
+  const words = seg.estimateWordTimings([
+    { start: S(1), end: S(3.2), text: 'This is a test caption for Edit Suite' },
+    { start: S(3.5), end: S(6), text: 'We grew our revenue 300% in one quarter' },
+  ]);
+  const { cues } = seg.segmentWords(words, {});
+  assert.deepEqual(cues.map((c) => c.text.replace(/\n/g, ' ')), ['This is a test caption for Edit Suite', 'We grew our revenue 300% in one quarter']);
+  // still splits long entries when they do not fit
+  const long = seg.segmentWords(words, { maxCharsPerLine: 12, maxLines: 1 }).cues;
+  assert.ok(long.length > 2 && long.every((c) => c.lines[0].length <= 12));
+  assert.ok(!long.some((c) => /Suite We/.test(c.text)));
+});
+
 test('breakLines refuses what cannot fit', () => {
   assert.equal(seg.breakLines(['supercalifragilistic'], 10, 2), null);
   assert.deepEqual(seg.breakLines(['short'], 10, 2), ['short']);

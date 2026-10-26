@@ -41,6 +41,7 @@ async function trackItems(a, timeline, type, index) {
   for (const it of items) {
     out.push({
       ref: it,
+      id: await a.call('TimelineItem', it, 'GetUniqueId').catch(() => null),
       name: await a.call('TimelineItem', it, 'GetName'),
       start: await a.must('TimelineItem', it, 'GetStart'),
       end: await a.must('TimelineItem', it, 'GetEnd'),

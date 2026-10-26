@@ -25,6 +25,13 @@ function setup(opts) {
   return { fake, dir, storage, router, tl, events };
 }
 
+// A 20 s, 25 fps media clip on V1 so scratch tests have real content to place after.
+function addMediaClip(tl, name = 'A001') {
+  const mpi = new MediaPoolItem(name, { FPS: 25, Frames: '500' });
+  tl.tracks.video[0].push(new TimelineItem({ name, start: tl.startFrame, end: tl.startFrame + 500, mpi }));
+  return mpi;
+}
+
 async function ok(router, op, args) {
   const r = await router.invoke(op, args);
   if (!r.ok) assert.fail(`${op} failed: ${JSON.stringify(r.error)}`);
@@ -54,7 +61,8 @@ test('capabilities on an older / free build are honest', async () => {
 });
 
 test('capabilities on 21.0.0 beta 20 (the current test build)', async () => {
-  const { router } = setup({ version: [21, 0, 0, 20, 'b'] });
+  const { router, tl } = setup({ version: [21, 0, 0, 20, 'b'] });
+  addMediaClip(tl);
   let s = await ok(router, 'project.summary');
   assert.equal(s.capabilities['captions.transcription'].status, 'unavailable', '21.1-only');
   assert.equal(s.capabilities['item.fades'].status, 'unavailable', '21.1-only');
@@ -70,15 +78,56 @@ test('capabilities on 21.0.0 beta 20 (the current test build)', async () => {
 });
 
 test('subtitle import test removes its test clip even when a step fails', async () => {
-  const { router, fake } = setup();
+  const { router, fake, tl } = setup();
+  addMediaClip(tl);
+  const realAppend = fake.project.mediaPool.AppendToTimeline.bind(fake.project.mediaPool);
   const pool = fake.project.mediaPool;
-  pool.AppendToTimeline = () => { throw new Error('Execute: AppendToTimeline: Error response (errorStr:simulated) (errorCode:1)'); };
+  // Filler placement works; the subtitle placement raises.
+  pool.AppendToTimeline = (infos) => {
+    if (infos[0].mediaPoolItem.srt) throw new Error('Execute: AppendToTimeline: Error response (errorStr:simulated) (errorCode:1)');
+    return realAppend(infos);
+  };
   const r = await router.invoke('diag.testSubtitles', { confirm: true });
   assert.equal(r.ok, false);
   assert.equal(r.error.source, 'Resolve API (raised an error)');
   const clips = (f) => [...f.clips, ...f.subs.flatMap(clips)];
-  assert.deepEqual(clips(pool.root).map((c) => c.name), [], 'no leftover test clip');
+  assert.ok(!clips(pool.root).some((c) => /subtitle-import-test/.test(c.name)), 'no leftover test clip');
   assert.equal(fake.project.timelines.length, 1, 'scratch timeline removed');
+});
+
+test('scratch test FAILS on a build that ignores the requested position (the 21.0.0b20 symptom)', async () => {
+  const { router, tl, fake } = setup({ version: [21, 0, 0, 20, 'b'] });
+  addMediaClip(tl);
+  fake.project.mediaPool.subtitlePlacement = 'always-append';
+  const t = await ok(router, 'diag.testSubtitles', { confirm: true });
+  assert.equal(t.ok, false);
+  assert.match(t.detail, /Wrong placement/);
+  const s = await ok(router, 'project.summary');
+  assert.equal(s.capabilities['captions.srtTrack'].status, 'failed-verification');
+  assert.equal(fake.project.timelines.length, 1, 'scratch timeline removed');
+});
+
+test('a wrong real placement is rolled back and switches the feature off', async () => {
+  const { router, dir, tl, fake } = setup({ version: [21, 0, 0, 20, 'b'] });
+  addMediaClip(tl);
+  assert.equal((await ok(router, 'diag.testSubtitles', { confirm: true })).ok, true);
+  const srt = path.join(dir, 'x.srt');
+  fs.writeFileSync(srt, '1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n');
+  const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srt } });
+  fake.project.mediaPool.subtitlePlacement = 'always-append'; // Resolve misbehaves this time
+  const r = await router.invoke('captions.applySubtitleTrack', { previewId: preview.previewId, confirm: true });
+  assert.equal(r.ok, false);
+  assert.match(r.error.message, /removed again, so the timeline is unchanged/);
+  assert.equal(tl.tracks.subtitle.length, 0, 'new track and its subtitles removed');
+  const s = await ok(router, 'project.summary');
+  assert.equal(s.capabilities['captions.srtTrack'].status, 'failed-verification');
+});
+
+test('a pass from the old (weaker) subtitle test no longer counts', async () => {
+  const { router, storage } = setup({ version: [21, 0, 0, 20, 'b'] });
+  storage.updateSettings((st) => ({ ...st, verified: { 'captions.srtTrack': { ok: true, build: '21.0.0.20', at: 'x', detail: 'v1 pass' } } }));
+  const s = await ok(router, 'project.summary');
+  assert.equal(s.capabilities['captions.srtTrack'].status, 'needs-verification');
 });
 
 test('writes require confirmation', async () => {
@@ -134,7 +183,9 @@ function srtFile(dir) {
 
 test('captions: preview, gated SRT placement, verified after diagnostics test', async () => {
   const { router, dir, tl, fake } = setup();
-  tl.minLength = 250;
+  addMediaClip(tl);
+  // Existing subtitles must stay untouched: placement goes to a NEW track.
+  tl.tracks.subtitle.push([new TimelineItem({ name: 'Subtitle', text: 'existing', start: 90100, end: 90150 })]);
   const preview = await ok(router, 'captions.prepare', { source: { kind: 'file', path: srtFile(dir) }, options: { maxCharsPerLine: 20 } });
   assert.ok(preview.cues.length >= 2);
   assert.equal(preview.cues[0].startFrame, 90025);
@@ -155,6 +206,9 @@ test('captions: preview, gated SRT placement, verified after diagnostics test', 
   assert.equal(summary.capabilities['captions.srtTrack'].evidence, 'verified-here');
   const applied = await ok(router, 'captions.applySubtitleTrack', { previewId: preview.previewId, confirm: true });
   assert.equal(applied.verify.ok, true, JSON.stringify(applied.verify));
+  assert.equal(applied.subtitleTrack, 2, 'placed on a new track');
+  assert.deepEqual(tl.tracks.subtitle[0].map((x) => x.text), ['existing']);
+  assert.equal(tl.tracks.subtitle[1].length, preview.cues.length);
   assert.match(applied.backup.backupName, /backup/);
   assert.equal(fake.project.current, tl, 'original timeline still current after backup');
 });
