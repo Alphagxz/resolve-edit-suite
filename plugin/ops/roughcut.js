@@ -45,7 +45,7 @@ async function analyse(a, deps, req, task) {
     const rate = await mediaRate(a, mpi);
     const file = await clipProperty(a, mpi, 'File Path');
     if (!rate) { perItem.push({ name: it.name, skipped: 'unknown source frame rate' }); continue; }
-    const startSec = (it.leftOffset || 0) * rate.den / rate.num;
+    const startSec = it.sourceStartTime ?? ((it.leftOffset || 0) * rate.den) / rate.num;
     const durSec = (it.end - it.start) * ctx.rate.den / ctx.rate.num;
     const env = await envelopeForRange({ file, startSec, durSec, ffmpegPath: settings.ffmpegPath, task });
     const found = silence.findSilences(env, opts);
@@ -92,10 +92,18 @@ async function addReviewMarkers(a, deps, req) {
   return { added, failed, tag, summary: `${added} review marker(s) added${failed.length ? `; ${failed.length} could not be added (a marker may already exist at that frame)` : ''}.` };
 }
 
+// DeleteMarkerByCustomData removes only the FIRST match (official README), so
+// delete each of this run's markers by frame and confirm none remain.
 async function clearReviewMarkers(a, deps, req) {
   const { timeline } = await a.currentTimeline();
-  const ok = await a.call('Timeline', timeline, 'DeleteMarkerByCustomData', `${MARKER_TAG}:${req.runId}`);
-  return { ok: Boolean(ok) };
+  const tag = `${MARKER_TAG}:${req.runId}`;
+  const ours = async () => Object.entries((await a.call('Timeline', timeline, 'GetMarkers')) || {}).filter(([, m]) => m && m.customData === tag);
+  let removed = 0;
+  for (const [frame] of await ours()) {
+    if (await a.call('Timeline', timeline, 'DeleteMarkerAtFrame', Number(frame))) removed++;
+  }
+  const remaining = (await ours()).length;
+  return { removed, remaining, summary: remaining ? `${removed} review marker(s) removed; ${remaining} could not be removed.` : `${removed} review marker(s) removed.` };
 }
 
 async function build(a, deps, req, task) {
@@ -105,11 +113,13 @@ async function build(a, deps, req, task) {
   const track = req.track;
   const items = await trackItems(a, timeline, track.type, track.index);
   const planItems = [];
+  const srcWarnings = [];
   for (const it of items) {
     const mpi = await a.call('TimelineItem', it.ref, 'GetMediaPoolItem');
+    const srcRate = mpi ? await mediaRate(a, mpi) : null;
     planItems.push({
-      id: it.name, name: it.name, recStart: it.start, recEnd: it.end, srcStart: it.leftOffset || 0,
-      srcRate: mpi ? await mediaRate(a, mpi) : null, mediaRef: mpi,
+      id: it.name, name: it.name, recStart: it.start, recEnd: it.end, srcStart: sourceStartFrame(it, srcRate, ctx, srcWarnings),
+      srcRate, mediaRef: mpi,
       speed: await readSpeed(a, it.ref),
     });
   }
@@ -143,6 +153,7 @@ async function build(a, deps, req, task) {
   const plan = planRoughCut({ ctx, items: planItems, keep, otherTrackItems: others, endFrameInclusive: calib.appendEndInclusive !== false });
   if (linkedTrack) plan.warnings.unshift({ type: 'linked', message: `${linkedTrack} holds the linked ${otherType} of the same clips and is rebuilt together with ${track.type === 'video' ? 'V' : 'A'}${track.index}.` });
   else plan.warnings.unshift({ type: 'single', message: `Only ${track.type} is rebuilt: no track holds the matching linked ${otherType} at identical positions.` });
+  plan.warnings.unshift(...srcWarnings);
   if (planItems.some((p) => p.speed === null)) {
     plan.warnings.unshift({ type: 'speed-unknown', message: 'Clip speed cannot be read on this Resolve build (needs 21.1). Retimed clips would be rebuilt at 100% — check the result.' });
   }
@@ -202,6 +213,20 @@ async function build(a, deps, req, task) {
     warnings: plan.warnings,
     summary: `${infos.length} piece(s) placed on "${name}"; removed ${tb.flicksToSeconds(tb.framesToFlicks(plan.summary.removedFrames, ctx.rate)).toFixed(1)}s; ${verify.ok ? 'continuity verified' : 'verification found problems'}.`,
   };
+}
+
+/**
+ * Source in-point in MEDIA frames. Same-rate clips use GetLeftOffset (third-
+ * party measured it exact against the startFrame sent). For mixed-rate clips
+ * the unit of GetLeftOffset is undocumented, so the documented
+ * GetSourceStartTime (seconds) is converted at the media rate instead.
+ */
+function sourceStartFrame(it, srcRate, ctx, warnings) {
+  const left = it.leftOffset || 0;
+  if (!srcRate || srcRate.num * ctx.rate.den === ctx.rate.num * srcRate.den) return left;
+  if (it.sourceStartTime !== null && it.sourceStartTime !== undefined) return Math.round((it.sourceStartTime * srcRate.num) / srcRate.den);
+  warnings.push({ type: 'source-offset', message: `"${it.name}" (${srcRate.label} fps in a ${ctx.rate.label} timeline): source start could not be read in seconds; using GetLeftOffset, whose unit for mixed-rate clips is undocumented. Check the result.` });
+  return left;
 }
 
 /**

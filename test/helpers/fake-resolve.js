@@ -48,8 +48,8 @@ class Folder {
 }
 
 class TimelineItem {
-  constructor({ name, start, end, leftOffset = 0, mpi = null, fusion = false, text = null }) {
-    Object.assign(this, { name, start, end, leftOffset, mpi });
+  constructor({ name, start, end, leftOffset = 0, mpi = null, fusion = false, text = null, sourceStartTime = null }) {
+    Object.assign(this, { name, start, end, leftOffset, mpi, sourceStartTimeOverride: sourceStartTime });
     this.comp = fusion ? new Comp() : null;
     if (text !== null) this.text = text;
   }
@@ -58,6 +58,11 @@ class TimelineItem {
   GetEnd() { return this.end; }
   GetDuration() { return this.end - this.start; }
   GetLeftOffset() { return this.leftOffset; }
+  // Seconds into the source media (official since 21.0). Mock: leftOffset is in media frames.
+  GetSourceStartTime() {
+    if (this.sourceStartTimeOverride !== null) return this.sourceStartTimeOverride;
+    return this.mpi ? this.leftOffset / Number(this.mpi.props.FPS) : 0;
+  }
   GetMediaPoolItem() { return this.mpi; }
   GetFusionCompCount() { return this.comp ? 1 : 0; }
   GetFusionCompByIndex(i) { return i === 1 ? this.comp : null; }
@@ -92,10 +97,17 @@ class Timeline {
     return true;
   }
   GetMarkers() { return { ...this.markers }; }
+  // Official README (21.0): "Delete first matching marker with specified customData."
   DeleteMarkerByCustomData(cd) {
-    let n = 0;
-    for (const [f, m] of Object.entries(this.markers)) if (m.customData === cd) { delete this.markers[f]; n++; }
-    return n > 0;
+    const hit = Object.entries(this.markers).find(([, m]) => m.customData === cd);
+    if (!hit) return false;
+    delete this.markers[hit[0]];
+    return true;
+  }
+  DeleteMarkerAtFrame(frame) {
+    if (!this.markers[frame]) return false;
+    delete this.markers[frame];
+    return true;
   }
   DuplicateTimeline(name) {
     const t = new Timeline(this.project, name, {});

@@ -35,7 +35,7 @@ This is third-party evidence. It is recorded per feature in `plugin/resolve/capa
 | Import bin export (.drb) | `MediaPool.ImportFolderFromFile` | live 19/20 | caption presets |
 | Import files into a chosen bin | `SetCurrentFolder` + `ImportMedia` | live 19/20 | SRT |
 | Word-timed transcription | `MediaPoolItem.TranscribeAudio`, `GetTranscription` (21.1, Studio) | live 21.1.0.14 | captions |
-| Markers with custom data | `Timeline.AddMarker`, `GetMarkers`, `DeleteMarkerByCustomData` | live 19/20 | rough-cut review |
+| Markers with custom data | `Timeline.AddMarker`, `GetMarkers`, `DeleteMarkerAtFrame` (`DeleteMarkerByCustomData` deletes only the first match) | official 21.0 docs | rough-cut review |
 | Fusion title by name | `Timeline.InsertFusionTitleIntoTimeline` | live 19/20 | motion graphics |
 | Set Text+ text | `TimelineItem.GetFusionCompByIndex` → comp `GetToolList(false,'TextPlus')` → `SetInput('StyledText')` | live 19/20 (Text+ via title items) | styled captions |
 | Native fades / transitions / speed / item type | `SetFades`, `AddTransition`, `GetSpeed`, `GetType` (21.1) | live 21.1.0.14 | speed read in rough cut; others reserved for later modules |
@@ -95,3 +95,27 @@ Run of `tools/discover.py` (SHA-256 `1fdd1a6d…ce69`) on the user's Mac, read-o
 - Bins: **MotionText Pro** › *Timeline* (2 items: "Text design template", "Text design"), *Text Animation* (39 animated text presets, e.g. Smooth Word Up, Glitch Text, Partial Blur), *Zoom* (2 items: "Adjustment Clip", "slow zoomout").
 - **Finding:** a genuine bin export contains `project.xml`. Milestone 1's classifier treated any ZIP with `project.xml` as a project archive and would have **refused** this file. Fixed: content now proves only "Resolve XML archive"; `.drb` → bin export (imported with `ImportFolderFromFile`), `.drp` → project archive (migration), anything else → not imported. Regression test uses the same entry layout with synthetic contents.
 - Not yet known: the media-pool clip type of the Text Animation items and whether their text is driven by a Text+ tool. Determined by the first "Place first caption (test)" run, which reports it instead of assuming.
+
+### Second run, with a timeline open (2026-10-26)
+
+All eight objects probed on **Studio 21.0.0 beta 20**, `getattr` fabricates no names on any of them.
+
+| Object | Result |
+|---|---|
+| Resolve, ProjectManager, Project, MediaPool, Folder, Timeline | Every method the suite calls is present |
+| TimelineItem | Missing exactly the 21.1-only `GetType`, `GetSpeed`, `SetFades`, `GetFades`, `AddTransition` |
+| MediaPoolItem | Missing exactly the 21.1-only `GetTranscription` |
+
+Probed timeline: "Timeline 3", **24 fps** NDF, 1920×1080, start 86400 (01:00:00:00), 4 video / 1 audio / 0 subtitle tracks. Its first clip is **30 fps** media (1717 frames) occupying 1373 timeline frames — a real mixed-rate case.
+
+**Confirmed by the official docs shipped with this build** (`Scripting/README.txt`, last updated 7 Oct 2025; `Workflow Integrations/README.txt`, 3 Oct 2024):
+
+- Plugin manifest: `<BlackmagicDesign><Plugin>` with `Id`, `Name`, `Version`, `Description`, `FilePath` — exactly the elements the installer derives. Plugin directories are named `com.<company>.<plugin_name>`; the suite now installs to `com.editsuite.resolve.panel`.
+- `WorkflowIntegration` module: `GetInfo`, `Initialize`, `InitializePromise`, `GetResolve`, `GetResolvePromise` (all further calls return promises), `RegisterCallback` (`RenderStart`, `RenderStop`, `ResolveQuit`), `DeregisterCallback`, `CleanUp`, `SetAPITimeout` (APIs do not time out by default). Plugins: macOS/Windows only.
+- `AppendToTimeline` clipInfo keys: `mediaPoolItem`, `startFrame`, `endFrame` (float/int), optional `mediaType` (1 video, 2 audio), `trackIndex`, `recordFrame`. Inclusivity of `endFrame` is not documented — still measured by Diagnostics › Calibrate.
+- Marker frames are offsets from the timeline start. **`DeleteMarkerByCustomData` deletes only the first match** — the suite's "Remove review markers" called it once and would have left all but one marker behind. Fixed: markers of the run are removed with `DeleteMarkerAtFrame` and the removal is verified; the mock now follows the documented behaviour, and a regression test covers it.
+- `TimelineItem.GetSourceStartTime` (seconds) is documented. For mixed-rate clips the unit of `GetLeftOffset` is not, so audio analysis and rough-cut source in-points now use `GetSourceStartTime` for mixed-rate clips (same-rate clips keep `GetLeftOffset`, which third parties measured exact).
+- Also documented and available for later milestones: `AddTrack` with `{index}`, `SetTrackLock`/`GetIsTrackLocked`, `Timeline.GetMediaPoolItem` (nested-timeline title placement), `GetMarkInOut`/`SetMarkInOut`, `CreateCompoundClip`, `GetVoiceIsolationState`/`SetVoiceIsolationState`.
+- Captions on 21.0: `TranscribeAudio` exists but there is no `GetTranscription` and no API to read or write subtitle text. Caption sources on this build are SRT/VTT files; `CreateSubtitlesFromAudio` can create Resolve's own (unstyled) subtitles.
+
+Not yet obtained: the SamplePlugin's `main.js`/`preload.js` (discovery copies only README/manifest/docs files), to compare the sandboxed IPC structure line by line.

@@ -68,7 +68,7 @@ async function transcriptWords(a, timeline, ctx, track, task) {
     } catch (e) {
       throw new SuiteError(`Transcription of "${it.name}" has an unexpected shape: ${e.message}`, 'unsupported');
     }
-    const srcIn = tb.framesToFlicks(it.leftOffset || 0, rate);
+    const srcIn = it.sourceStartTime !== null && it.sourceStartTime !== undefined ? tb.secondsToFlicks(it.sourceStartTime) : tb.framesToFlicks(it.leftOffset || 0, rate);
     const recStart = ctx.fromTimelineFrame(it.start);
     const recEnd = ctx.fromTimelineFrame(it.end);
     for (const seg of t.segments) {

@@ -45,9 +45,20 @@ async function trackItems(a, timeline, type, index) {
       start: await a.must('TimelineItem', it, 'GetStart'),
       end: await a.must('TimelineItem', it, 'GetEnd'),
       leftOffset: await a.call('TimelineItem', it, 'GetLeftOffset'),
+      // Seconds into the source media; unambiguous for mixed-rate clips.
+      sourceStartTime: await optionalNumber(a, it, 'GetSourceStartTime'),
     });
   }
   return out;
+}
+
+async function optionalNumber(a, item, method) {
+  try {
+    const v = Number(await a.call('TimelineItem', item, method));
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 async function clipProperty(a, mpi, key) {

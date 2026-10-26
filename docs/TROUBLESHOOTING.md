@@ -27,7 +27,7 @@ Data folder: macOS `~/Library/Application Support/ResolveEditSuite`, Windows `%A
 
 | Symptom | Cause / fix |
 |---|---|
-| Panel not in the Workflow Integrations menu | Studio only; restart Resolve after installing; check `Workflow Integration Plugins/EditSuite/manifest.xml` exists. |
+| Panel not in the Workflow Integrations menu | Studio only; restart Resolve after installing; check `Workflow Integration Plugins/com.editsuite.resolve.panel/manifest.xml` exists. |
 | Banner "WorkflowIntegration.node could not be loaded" | Re-run the installer after a Resolve update (the binding comes from your Resolve version). |
 | "Initialize returned false" | Manifest Id mismatch — reinstall. |
 | Subtitle track button disabled | Run Diagnostics › Test subtitle import on this build. |
