@@ -131,6 +131,22 @@ class Timeline {
     for (const k of Object.keys(this.tracks)) this.tracks[k] = this.tracks[k].map((tr) => tr.filter((x) => !items.includes(x)));
     return true;
   }
+  /**
+   * Resolve Studio speech-to-text. Test-scripted: `this.speech` is a list of
+   * { start, end, text } in seconds; subtitleNames = 'placeholder' simulates a
+   * build that does not expose the generated text through GetName.
+   */
+  CreateSubtitlesFromAudio() {
+    if (!this.speech || !this.speech.length) return false;
+    const fps = tb.rateToFloat(tb.parseFrameRate(this.settings.timelineFrameRate));
+    this.tracks.subtitle.push(this.speech.map((sp) => new TimelineItem({
+      name: 'Subtitle',
+      text: this.subtitleNames === 'placeholder' ? null : sp.text,
+      start: this.startFrame + Math.round(sp.start * fps),
+      end: this.startFrame + Math.round(sp.end * fps),
+    })));
+    return true;
+  }
   contentEnd() {
     let end = this.startFrame;
     for (const k of ['video', 'audio']) for (const tr of this.tracks[k]) for (const it of tr) end = Math.max(end, it.end);

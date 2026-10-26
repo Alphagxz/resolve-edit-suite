@@ -21,13 +21,14 @@ const captions = require('./ops/captions');
 const roughcut = require('./ops/roughcut');
 const diagnostics = require('./ops/diagnostics');
 
-const SETTABLE = new Set(['ffmpegPath', 'templateRoots', 'captions', 'roughCut']);
+const SETTABLE = new Set(['ffmpegPath', 'templateRoots', 'captions', 'roughCut', 'backupBeforeEdits']);
 
-function createRouter({ getResolve, storage, emit = () => {}, pluginVersion = '0.0.0' }) {
+function createRouter({ getResolve, storage, emit = () => {}, pluginVersion = '0.0.0', setApiTimeout = null }) {
   const log = createOpLog(storage);
   const tasks = createTaskRunner((e) => emit('suite:progress', e));
   const previews = new Map();
   const analyses = new Map();
+  const placements = new Map();
   let capsCache = null;
 
   function adapter() {
@@ -37,6 +38,7 @@ function createRouter({ getResolve, storage, emit = () => {}, pluginVersion = '0
     storage,
     calibration: () => storage.loadSettings().calibration || {},
     capabilities: () => capsCache,
+    setApiTimeout,
   };
   async function refreshCaps(a) {
     capsCache = await diagnostics.capabilities(a, storage);
@@ -168,7 +170,13 @@ function createRouter({ getResolve, storage, emit = () => {}, pluginVersion = '0
     },
 
     'captions.prepare': async (req) => task('captions-prepare', async (t) => {
-      const preview = await captions.prepare(adapter(), deps, req, t);
+      const a = adapter();
+      if (req && req.source && req.source.kind === 'resolveAudio') {
+        if (!capsCache) await refreshCaps(a);
+        const preview = await log.run('captions.fromAudio', { keepResolveTrack: Boolean(req.source.keepResolveTrack) }, () => captions.prepare(a, deps, req, t));
+        return { previewId: remember(previews, preview), ...preview };
+      }
+      const preview = await captions.prepare(a, deps, req, t);
       return { previewId: remember(previews, preview), ...preview };
     }),
     'captions.transcribe': async (args) => {
@@ -195,7 +203,19 @@ function createRouter({ getResolve, storage, emit = () => {}, pluginVersion = '0
       const p = previews.get(args.previewId);
       if (!p) throw new SuiteError('That preview has expired; generate it again.', 'invalid-input');
       const a = adapter();
-      return task('captions-apply', (t) => log.run('captions.applyStyled', { cues: args.limit || p.cues.length, styleId: args.styleId }, () => captions.applyStyled(a, deps, p, args, t)));
+      return task('captions-apply', async (t) => {
+        const r = await log.run('captions.applyStyled', { cues: args.limit || p.cues.length, styleId: args.styleId }, () => captions.applyStyled(a, deps, p, args, t));
+        return { ...r, placementId: r.placement && r.placement.itemIds.length ? remember(placements, r.placement, 20) : null };
+      });
+    },
+    'captions.removePlaced': async (args) => {
+      requireConfirm(args, 'Removing placed captions');
+      const pl = placements.get(args.placementId);
+      if (!pl) throw new SuiteError('That placement is no longer tracked (the panel was restarted). Delete the caption track in Resolve instead.', 'invalid-input');
+      const a = adapter();
+      const r = await log.run('captions.removePlaced', { timeline: pl.timelineName, items: pl.itemIds.length }, () => captions.removePlaced(a, pl));
+      if (r.remaining === 0 || r.removed === 0) placements.delete(args.placementId);
+      return r;
     },
 
     'roughcut.analyse': async (req) => task('roughcut-analyse', async (t) => {
