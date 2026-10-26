@@ -141,7 +141,23 @@ async function captionStyles(a, storage) {
     const n = await a.call('Folder', f, 'GetName');
     if (wanted.has(n)) await walk(f, [n]);
   }
-  return { styles };
+  // Annotate with how each preset holds its words (read from the .drb), and
+  // keep non-text items (zooms, adjustment clips, template timelines) out of
+  // the caption style list.
+  let presets = null;
+  if (s.captionPreset && s.captionPreset.path && fs.existsSync(s.captionPreset.path)) {
+    try { presets = require('../core/bin-presets').inspectBinPresets(s.captionPreset.path); } catch { presets = null; }
+  }
+  if (!presets) return { styles, hidden: [] };
+  const byKey = new Map(presets.map((p) => [`${p.folder}|${p.name}`, p]));
+  const out = [];
+  const hidden = [];
+  for (const st of styles) {
+    const p = byKey.get(`${st.folder}|${st.name}`);
+    if (p && p.wiring === 'none') hidden.push({ name: st.name, folder: st.folder, reason: p.itemType === 'TimelineClip' ? 'template timeline' : 'no text (effect)' });
+    else out.push({ ...st, wiring: p ? p.wiring : 'unknown', authoredFormat: p ? p.format : null });
+  }
+  return { styles: out, hidden };
 }
 
 function templates(storage) {

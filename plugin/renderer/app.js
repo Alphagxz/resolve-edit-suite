@@ -32,7 +32,7 @@
       $('#conn-status').replaceChildren(h('span.dot.ok'), `${s.resolve.product || 'Resolve'} ${s.resolve.versionString || ''}`);
       state.favourites = (await call('settings.get', undefined, { quiet: true })).favourites;
       state.checklist = await call('setup.checklist', undefined, { quiet: true }).catch(() => null);
-      call('assets.captionStyles', undefined, { quiet: true }).then((r) => { state.styles = r.styles; }).catch(() => {});
+      call('assets.captionStyles', undefined, { quiet: true }).then((r) => { state.styles = r.styles; state.stylesHidden = r.hidden || []; }).catch(() => {});
     } catch (e) {
       state.summary = null;
       $('#conn-status').replaceChildren(h('span.dot.err'), e.info ? e.info.source : 'Not connected');

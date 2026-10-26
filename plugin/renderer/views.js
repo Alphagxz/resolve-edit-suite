@@ -192,14 +192,15 @@
           state.styles.length ? h('div',
             h('div.row', h('input', { type: 'search', placeholder: 'Search styles', value: f.styleQuery, oninput: (e) => { f.styleQuery = e.target.value; rerender(); } })),
             h('div.fields', { style: 'margin-top:8px' },
-              field('Caption style', select([['', 'Choose…'], ...styleList.map((s) => [s.id, `${favs.has(s.id) ? '★ ' : ''}${s.name} — ${s.folder}`])], f.styleId, { onchange: (e) => { f.styleId = e.target.value; } })),
+              field('Caption style', select([['', 'Choose…'], ...styleList.map((s) => [s.id, `${favs.has(s.id) ? '★ ' : ''}${s.name}${s.wiring === 'follower' ? ' (animated words)' : ''} — ${s.folder}`])], f.styleId, { onchange: (e) => { f.styleId = e.target.value; } })),
               field('Emphasis style (optional)', select([['', 'Same style'], ...styleList.map((s) => [s.id, s.name])], f.emphasisStyleId, { onchange: (e) => { f.emphasisStyleId = e.target.value; } }))),
+            state.stylesHidden && state.stylesHidden.length ? h('div.small.faint', { style: 'margin-top:6px' }, `${state.stylesHidden.length} non-text item(s) hidden: ${state.stylesHidden.map((x) => x.name).join(', ')}.`) : null,
             h('div.row', { style: 'margin-top:6px' },
               h('button.ghost', { disabled: !f.styleId || undefined, onclick: async () => { state.favourites = await call('favourites.toggle', { kind: 'captionStyles', id: f.styleId }); rerender(); } }, favs.has(f.styleId) ? '★ Unfavourite style' : '☆ Favourite style')),
             h('div.row', { style: 'margin-top:10px' },
               h('button.secondary', { disabled: !usable('fusion.textEdit') || undefined, onclick: () => applyStyled(1) }, 'Place first caption (test)'),
               h('button.primary', { disabled: !usable('fusion.textEdit') || undefined, onclick: () => applyStyled(0) }, 'Place all')))
-            : h('div.notice', 'No caption presets imported in this project. Import them in Asset Setup, then ', h('button.ghost', { onclick: async () => { const r = await call('assets.captionStyles'); state.styles = r.styles; rerender(); } }, 'reload styles'), '.'))),
+            : h('div.notice', 'No caption presets imported in this project. Import them in Asset Setup, then ', h('button.ghost', { onclick: async () => { const r = await call('assets.captionStyles'); state.styles = r.styles; state.stylesHidden = r.hidden || []; rerender(); } }, 'reload styles'), '.'))),
       notes.length ? h('div.card', h('h2', 'Checks'), list(notes)) : null,
       h('div.card.flush', h('div.table-wrap', h('table',
         h('thead', h('tr', h('th', '#'), h('th', 'In'), h('th', 'Out'), h('th', 'Text'), h('th', 'Flags'))),
@@ -383,7 +384,9 @@
               if (!(await confirmAction('Import caption presets', ['Imports the bin into the Media Pool of the CURRENT project. If this exact file was already imported here, nothing happens.', 'Your project timelines are not touched.']))) return;
               const r = await call('assets.importBin', { confirm: true });
               toast(r.message, { ok: true });
-              state.styles = (await call('assets.captionStyles')).styles;
+              const cs = await call('assets.captionStyles');
+              state.styles = cs.styles;
+              state.stylesHidden = cs.hidden || [];
             } }, 'Import into current project') : null)),
         h('div.card', { style: 'margin-top:14px' },
           h('h2', 'mKeynote and other Fusion templates'),

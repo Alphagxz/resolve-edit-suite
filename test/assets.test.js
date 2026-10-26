@@ -5,7 +5,8 @@ const fs = require('fs');
 const path = require('path');
 const { identifyAsset, inspectFusionSetting } = require('../plugin/core/assets');
 const { catalogueTemplates, searchTemplates } = require('../plugin/core/templates');
-const { tmpDir, writeZip, TEXT_PLUS_SETTING } = require('./helpers/fixtures');
+const { tmpDir, writeZip, TEXT_PLUS_SETTING, writeBinExport, TOOLS_FOLLOWER, TOOLS_DIRECT, TOOLS_NONE } = require('./helpers/fixtures');
+const { inspectBinPresets } = require('../plugin/core/bin-presets');
 
 test('Fusion setting inspection finds Text+ and published text input', () => {
   const info = inspectFusionSetting(TEXT_PLUS_SETTING);
@@ -106,4 +107,18 @@ test('template catalogue reads folders and .drfx bundles, flags duplicates and i
   assert.match(fx.insertNote, /Manual workflow/);
   assert.deepEqual(searchTemplates(templates, 'callout').map((t) => t.name), ['Callout Arrow']);
   assert.equal(searchTemplates(templates, '', { category: 'Effects' }).length, 1);
+});
+
+test('bin presets: decode embedded compositions and classify where the words live', () => {
+  const file = path.join(tmpDir(), 'MotionText Pro.drb');
+  writeBinExport(file, 'MotionText Pro', [['Smooth Word Up', TOOLS_FOLLOWER], ['Glitch Text', TOOLS_DIRECT], ['slow zoomout', TOOLS_NONE]]);
+  const p = inspectBinPresets(file);
+  const by = Object.fromEntries(p.map((x) => [x.name, x]));
+  assert.equal(by['Smooth Word Up'].wiring, 'follower');
+  assert.deepEqual(by['Smooth Word Up'].followers, ['Follower1']);
+  assert.equal(by['Glitch Text'].wiring, 'direct');
+  assert.equal(by['slow zoomout'].wiring, 'none');
+  assert.deepEqual(by['Glitch Text'].format, { width: 2160, height: 3840, rate: 24 });
+  assert.equal(by['Glitch Text'].folder, 'MotionText Pro');
+  assert.equal(by['Glitch Text'].itemType, 'Generator');
 });

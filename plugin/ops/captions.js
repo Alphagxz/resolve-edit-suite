@@ -225,6 +225,25 @@ async function placeSrtVerified(a, timeline, mediaPool, srtItem, ctx, expectedCu
   return { trackIndex, added: added.map((x) => ({ start: x.start, end: x.end, track: x.track })), verify, rolledBack };
 }
 
+/** Text wiring of the chosen preset items, from the validated .drb (when available). */
+async function presetHints(a, storage, items) {
+  const hints = new Map();
+  const rec = storage.loadSettings().captionPreset;
+  if (!rec || !rec.path || !fs.existsSync(rec.path)) return hints;
+  let presets;
+  try {
+    presets = require('../core/bin-presets').inspectBinPresets(rec.path);
+  } catch {
+    return hints;
+  }
+  for (const it of items.filter(Boolean)) {
+    const name = await a.call('MediaPoolItem', it, 'GetName');
+    const p = presets.find((x) => x.name === name && x.wiring !== 'none') || presets.find((x) => x.name === name);
+    if (p) hints.set(it, p);
+  }
+  return hints;
+}
+
 function verifyCuePlacement(cues, placed, tolerance = 0) {
   const problems = [];
   if (placed.length !== cues.length) problems.push(`Expected ${cues.length} caption(s), found ${placed.length}.`);
@@ -252,16 +271,42 @@ async function findPoolItem(a, mediaPool, uniqueId) {
   return null;
 }
 
-async function setCaptionText(a, item, text) {
+const textOf = (v) => (v && typeof v === 'object' && 'Value' in v ? v.Value : v);
+
+/**
+ * Set a placed preset's words where they actually live. Measured on
+ * MotionText Pro: in 30 of its 39 text presets Text+ StyledText is driven by a
+ * StyledTextFollower (the word-by-word animation), so the words are the
+ * follower's "Text" input and setting StyledText is ignored. In the other 9,
+ * Text+ StyledText holds the words. Every write is read back.
+ * @param {object} [hint] wiring from the .drb inspection: { wiring, followers }
+ */
+async function setCaptionText(a, item, text, hint = null) {
   const count = await a.call('TimelineItem', item, 'GetFusionCompCount');
   if (!count) return { ok: false, reason: 'The placed preset has no Fusion composition, so its text cannot be set through the API.' };
   const comp = await a.call('TimelineItem', item, 'GetFusionCompByIndex', 1);
-  const tools = comp ? listOf(await a.call('Composition', comp, 'GetToolList', false, 'TextPlus')) : [];
-  if (!tools.length) return { ok: false, reason: 'No Text+ tool found inside the preset composition.' };
-  const tool = tools[0];
+  const textTools = comp ? listOf(await a.call('Composition', comp, 'GetToolList', false, 'TextPlus')) : [];
+  if (!textTools.length) return { ok: false, reason: 'This preset has no Text+ node, so it is not a text preset (for example a zoom or adjustment clip).' };
+  let followers = listOf(await a.call('Composition', comp, 'GetToolList', false, 'StyledTextFollower').catch(() => []));
+  if (!followers.length && hint && hint.followers) {
+    for (const name of hint.followers) {
+      const t = await a.call('Composition', comp, 'FindTool', name).catch(() => null);
+      if (t) followers.push(t);
+    }
+  }
+  if (!followers.length && hint && hint.wiring === 'follower') {
+    return { ok: false, reason: 'This is an animated (follower) preset, but its animation node could not be reached through the API, so its words were not changed.' };
+  }
+  if (followers.length) {
+    for (const f of followers) await a.call('Tool', f, 'SetInput', 'Text', text);
+    const back = [];
+    for (const f of followers) back.push(textOf(await a.call('Tool', f, 'GetInput', 'Text')));
+    return back.every((b) => b === text) ? { ok: true, via: 'follower' } : { ok: false, reason: `Animated text read back as "${back.find((b) => b !== text)}" after setting it.` };
+  }
+  const tool = textTools[0];
   await a.call('Tool', tool, 'SetInput', 'StyledText', text);
-  const back = await a.call('Tool', tool, 'GetInput', 'StyledText');
-  return back === text ? { ok: true } : { ok: false, reason: `Text read back as "${back}" after setting it.` };
+  const back = textOf(await a.call('Tool', tool, 'GetInput', 'StyledText'));
+  return back === text ? { ok: true, via: 'text+' } : { ok: false, reason: `Text read back as "${back}" after setting it (its text may be driven by another node).` };
 }
 
 /**
@@ -280,6 +325,7 @@ async function applyStyled(a, deps, preview, req, task) {
   const style = await findPoolItem(a, mediaPool, req.styleId);
   if (!style) throw new SuiteError('The selected caption style is no longer in the Media Pool. Re-import the preset bin in Setup.', 'asset-missing');
   const emphasisStyle = req.emphasisStyleId ? await findPoolItem(a, mediaPool, req.emphasisStyleId) : null;
+  const hints = await presetHints(a, deps.storage, [style, emphasisStyle]);
   const styleRate = (await mediaRate(a, style)) || ctx.rate;
   const styleDurFrames = Number(await clipProperty(a, style, 'Frames')) || null;
 
@@ -315,7 +361,7 @@ async function applyStyled(a, deps, preview, req, task) {
     for (let j = 0; j < chunk.length; j++) {
       const item = placedItems[j];
       if (!item) { textResults.push({ id: chunk[j].cue.id, ok: false, reason: 'Not placed.' }); continue; }
-      textResults.push({ id: chunk[j].cue.id, ...(await setCaptionText(a, item, chunk[j].cue.text)) });
+      textResults.push({ id: chunk[j].cue.id, ...(await setCaptionText(a, item, chunk[j].cue.text, hints.get(chunk[j].info.mediaPoolItem))) });
     }
   }
   task.progress(90, 'Verifying');
