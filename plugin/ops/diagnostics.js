@@ -15,8 +15,13 @@ const { SuiteError, describeError } = require('../resolve/adapter');
 const { listOf, trackItems, mediaRate, timelineContext } = require('./resolve-reads');
 const { findFfmpeg } = require('../services/media-audio');
 const { captionPresetStatus } = require('./assets');
+const { placeSrtVerified } = require('./captions');
 
 const SCRATCH_NAME = 'Edit Suite Scratch (safe to delete)';
+// Bump when a scratch test changes so results from a weaker earlier version
+// no longer count (v1 ran on an empty timeline and could not detect an
+// ignored recordFrame).
+const TEST_VERSIONS = { 'captions.srtTrack': 2 };
 
 /** Gather live objects for capability probing without changing anything. */
 async function liveObjects(a) {
@@ -52,7 +57,7 @@ async function capabilities(a, storage) {
   const verified = storage.loadSettings().verified || {};
   const build = v.versionString || (v.version || []).join('.');
   // Only scratch-test results from THIS build count as verified.
-  const relevant = Object.fromEntries(Object.entries(verified).filter(([, r]) => r.build === build));
+  const relevant = Object.fromEntries(Object.entries(verified).filter(([id, r]) => r.build === build && (r.testVersion || 1) === (TEST_VERSIONS[id] || 1)));
   return { ...v, build, ...evaluateCapabilities({ version: v.version, isStudio: v.isStudio, objects }, relevant) };
 }
 
@@ -144,36 +149,62 @@ async function calibrate(a, storage) {
   return { ...result, build, cleanupWarning: a.cleanupWarning || null };
 }
 
-/** Scratch test of SRT -> subtitle track placement; records verified status. */
+/**
+ * Scratch test of SRT -> subtitle track placement; records verified status.
+ * The scratch timeline first gets ~6 s of real media, so a Resolve build that
+ * ignores recordFrame (appending after existing content, as observed on
+ * 21.0.0b20) fails this test instead of passing it on an empty timeline.
+ * Uses the same placeSrtVerified routine as the real "Add as subtitle track".
+ */
 async function testSubtitleImport(a, storage) {
   const caps = await capabilities(a, storage);
+  const filler = await findCalibrationClip(a);
+  const calib = storage.loadSettings().calibration || {};
   const res = await withScratchTimeline(a, async ({ mediaPool, scratch }) => {
-    const ctx = await timelineContext(a, scratch, storage.loadSettings().calibration || {});
-    // Two frame-aligned cues at 1.0-2.0 s and 2.5-3.3 s.
+    const ctx = await timelineContext(a, scratch, calib);
+    const fillerFrames = Math.min(filler.frames || 0, Math.round((6 * filler.rate.num) / filler.rate.den));
+    if (fillerFrames < Math.round((4 * filler.rate.num) / filler.rate.den)) {
+      return { ok: false, detail: 'The first media clip on V1/A1 is shorter than 4 seconds; the test needs a longer clip.' };
+    }
+    const endFrame = calib.appendEndInclusive === false ? fillerFrames : fillerFrames - 1;
+    await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: filler.mpi, startFrame: 0, endFrame, recordFrame: ctx.startFrame, trackIndex: 1 }]);
+    // Two frame-aligned cues at 1.0-2.0 s and 2.5-3.3 s, inside the filler.
     const at = (sec) => tb.quantize(tb.secondsToFlicks(sec), ctx.rate);
     const cues = [
       { start: at(1), end: at(2), text: 'Edit Suite test one' },
       { start: at(2.5), end: at(3.3), text: 'Edit Suite test two' },
     ];
+    const expected = cues.map((c, i) => ({ id: String(i + 1), startFrame: ctx.startFrame + tb.flicksToFrames(c.start, ctx.rate), endFrame: ctx.startFrame + tb.flicksToFrames(c.end, ctx.rate) }));
     const file = storage.writeGenerated('subtitle-import-test.srt', subs.writeSrt(cues, { msRounding: 'ceil' }));
     const imported = listOf(await a.call('MediaPool', mediaPool, 'ImportMedia', [file]));
     if (!imported.length) return { ok: false, detail: 'ImportMedia did not import an .srt file.' };
-    let placed;
     try {
-      await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: imported[0], recordFrame: ctx.startFrame }]);
-      const n = (await a.call('Timeline', scratch, 'GetTrackCount', 'subtitle')) || 0;
-      placed = n ? await trackItems(a, scratch, 'subtitle', 1) : [];
+      const r = await placeSrtVerified(a, scratch, mediaPool, imported[0], ctx, expected);
+      return r.verify.ok
+        ? { ok: true, detail: 'Two test subtitles placed on a new subtitle track at the exact expected frames, with media already on the timeline.' }
+        : { ok: false, detail: `Wrong placement: ${r.verify.problems.slice(0, 2).join(' ')} Added: ${JSON.stringify(r.added.map((x) => [x.start, x.end, `ST${x.track}`]))}.` };
     } finally {
       // Always remove the test clip, even if a step above failed.
       const removed = await a.call('MediaPool', mediaPool, 'DeleteClips', imported).catch(() => false);
       if (!removed) a.cleanupWarning = 'The test clip "subtitle-import-test.srt" could not be removed from the Media Pool; delete it manually.';
     }
-    const expected = cues.map((c) => ({ s: ctx.startFrame + tb.flicksToFrames(c.start, ctx.rate), e: ctx.startFrame + tb.flicksToFrames(c.end, ctx.rate) }));
-    const ok = placed.length === 2 && placed.every((p, i) => p.start === expected[i].s && p.end === expected[i].e);
-    return { ok, detail: ok ? 'Two test subtitles placed at the exact expected frames.' : `Placed ${placed.length} item(s): ${JSON.stringify(placed.map((p) => [p.start, p.end]))}; expected ${JSON.stringify(expected.map((e) => [e.s, e.e]))}.` };
   });
-  storage.updateSettings((s) => ({ ...s, verified: { ...s.verified, 'captions.srtTrack': { ...res, build: caps.build, at: new Date().toISOString() } } }));
+  storage.updateSettings((s) => ({ ...s, verified: { ...s.verified, 'captions.srtTrack': { ...res, build: caps.build, testVersion: TEST_VERSIONS['captions.srtTrack'], at: new Date().toISOString() } } }));
   return { ...res, cleanupWarning: a.cleanupWarning || null };
 }
 
-module.exports = { report, capabilities, calibrate, testSubtitleImport, liveObjects, SCRATCH_NAME, FEATURES };
+/** First media clip on V1 (or A1) of the current timeline, with its rate and length. */
+async function findCalibrationClip(a) {
+  const { timeline } = await a.currentTimeline();
+  for (const type of ['video', 'audio']) {
+    for (const it of await trackItems(a, timeline, type, 1)) {
+      const mpi = await a.call('TimelineItem', it.ref, 'GetMediaPoolItem').catch(() => null);
+      if (!mpi) continue;
+      const rate = await mediaRate(a, mpi);
+      if (rate) return { mpi, rate, frames: Number(await a.call('MediaPoolItem', mpi, 'GetClipProperty', 'Frames').then((v) => (v && typeof v === 'object' ? v.Frames : v)).catch(() => 0)) };
+    }
+  }
+  throw new SuiteError('This test needs a media clip on V1 or A1 of the current timeline.', 'invalid-input');
+}
+
+module.exports = { TEST_VERSIONS, report, capabilities, calibrate, testSubtitleImport, liveObjects, SCRATCH_NAME, FEATURES };

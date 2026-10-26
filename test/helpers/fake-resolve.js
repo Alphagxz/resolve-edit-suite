@@ -50,10 +50,12 @@ class Folder {
 class TimelineItem {
   constructor({ name, start, end, leftOffset = 0, mpi = null, fusion = false, text = null, sourceStartTime = null }) {
     Object.assign(this, { name, start, end, leftOffset, mpi, sourceStartTimeOverride: sourceStartTime });
+    this.uid = nextId('item');
     this.comp = fusion ? new Comp() : null;
     if (text !== null) this.text = text;
   }
   GetName() { return this.text || this.name; }
+  GetUniqueId() { return this.uid; }
   GetStart() { return this.start; }
   GetEnd() { return this.end; }
   GetDuration() { return this.end - this.start; }
@@ -96,6 +98,20 @@ class Timeline {
   GetTrackCount(type) { return this.tracks[type].length; }
   GetItemListInTrack(type, i) { return (this.tracks[type][i - 1] || []).slice().sort((a, b) => a.start - b.start); }
   AddTrack(type) { this.tracks[type].push([]); return true; }
+  DeleteTrack(type, i) {
+    if (!this.tracks[type][i - 1]) return false;
+    this.tracks[type].splice(i - 1, 1);
+    return true;
+  }
+  DeleteClips(items) {
+    for (const k of Object.keys(this.tracks)) this.tracks[k] = this.tracks[k].map((tr) => tr.filter((x) => !items.includes(x)));
+    return true;
+  }
+  contentEnd() {
+    let end = this.startFrame;
+    for (const k of ['video', 'audio']) for (const tr of this.tracks[k]) for (const it of tr) end = Math.max(end, it.end);
+    return end;
+  }
   AddMarker(frame, color, name, note, duration, customData) {
     if (this.markers[frame]) return false;
     this.markers[frame] = { color, name, note, duration, customData };
@@ -189,11 +205,17 @@ class MediaPool {
     for (const info of infos) {
       const mpi = info.mediaPoolItem;
       if (mpi.srt) {
-        if (!tl.tracks.subtitle.length) tl.tracks.subtitle.push([]);
+        // Observed on 21.0.0b20: with recordFrame but no trackIndex, Resolve
+        // appended after the existing content. Honouring recordFrame when a
+        // trackIndex is given is the HYPOTHESIS under test on real Resolve;
+        // subtitlePlacement = 'always-append' simulates a build where it is not.
         const rate = tb.parseFrameRate(tl.settings.timelineFrameRate);
-        const base = info.recordFrame ?? tl.startFrame;
+        const honour = info.trackIndex && this.subtitlePlacement !== 'always-append';
+        const base = honour ? info.recordFrame ?? tl.startFrame : tl.contentEnd();
+        const tIdx = info.trackIndex ? info.trackIndex - 1 : 0;
+        while (tl.tracks.subtitle.length <= tIdx) tl.tracks.subtitle.push([]);
         for (const c of parseSrt(mpi.srt).cues) {
-          tl.tracks.subtitle[0].push(new TimelineItem({ name: 'Subtitle', text: c.text, start: base + tb.flicksToFrames(c.start, rate, 'floor'), end: base + tb.flicksToFrames(c.end, rate, 'floor') }));
+          tl.tracks.subtitle[tIdx].push(new TimelineItem({ name: 'Subtitle', text: c.text, start: base + tb.flicksToFrames(c.start, rate, 'floor'), end: base + tb.flicksToFrames(c.end, rate, 'floor') }));
         }
         placed.push(true);
         continue;

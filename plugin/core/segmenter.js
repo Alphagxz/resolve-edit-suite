@@ -19,6 +19,7 @@ const DEFAULTS = Object.freeze({
   lingerMs: 250, // hold after the last word if there is room
   maxCps: 20, // reading speed warning threshold (characters/second)
   breakOnSentence: true,
+  keepSourceBreaks: true, // never merge words across entries of an imported subtitle file
   breakOnSpeaker: true,
   caseMode: 'as-is', // 'as-is' | 'upper' | 'lower'
   stripPunctuation: false,
@@ -165,9 +166,10 @@ function segmentWords(inputWords, options) {
       const tooLong = w.end - current[0].start > maxDur;
       const gap = w.start - prev.end > maxGap;
       const sentence = o.breakOnSentence && /[.!?]["”']?$/.test(prev.text);
+      const sourceBreak = o.keepSourceBreaks && prev.cueEnd === true;
       const speaker = o.breakOnSpeaker && (w.speaker ?? null) !== (prev.speaker ?? null);
       const wordCap = o.maxWordsPerCue > 0 && current.length >= o.maxWordsPerCue;
-      if (!fits || tooLong || gap || sentence || speaker || wordCap) flush();
+      if (!fits || tooLong || gap || sentence || sourceBreak || speaker || wordCap) flush();
     }
     if (displayText(w, o).length > o.maxCharsPerLine) {
       warnings.push(`Word "${w.text}" is longer than ${o.maxCharsPerLine} characters and will overflow its line.`);
@@ -203,12 +205,12 @@ function estimateWordTimings(segments) {
     const total = tokens.reduce((s, t) => s + t.length + 1, 0);
     const span = seg.end - seg.start;
     let acc = 0;
-    for (const t of tokens) {
+    tokens.forEach((t, i) => {
       const s = seg.start + Math.round((span * acc) / total);
       acc += t.length + 1;
       const e = seg.start + Math.round((span * acc) / total);
-      out.push({ text: t, start: s, end: e, speaker: seg.speaker ?? null, estimated: true });
-    }
+      out.push({ text: t, start: s, end: e, speaker: seg.speaker ?? null, estimated: true, cueEnd: i === tokens.length - 1 });
+    });
   }
   return out;
 }

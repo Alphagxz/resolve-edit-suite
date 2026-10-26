@@ -177,26 +177,52 @@ async function applySubtitleTrack(a, deps, preview, task) {
     if (prevFolder) await a.call('MediaPool', mediaPool, 'SetCurrentFolder', prevFolder);
   }
   if (!imported.length) throw new SuiteError('Resolve did not import the generated SRT file.', 'call-failed', { srtPath });
-  const countItems = async (n) => {
-    const out = [];
-    for (let i = 1; i <= n; i++) out.push(listOf(await a.call('Timeline', timeline, 'GetItemListInTrack', 'subtitle', i)).length);
-    return out;
-  };
-  const before = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
-  const beforeCounts = await countItems(before);
   task.progress(50, 'Placing subtitles');
-  await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: imported[0], recordFrame: ctx.startFrame }]);
-  const after = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
-  const afterCounts = await countItems(after);
-  // The track that gained items is the one Resolve used (new or existing).
-  const changed = afterCounts.findIndex((n, i) => n > (beforeCounts[i] || 0));
-  if (changed < 0) {
-    throw new SuiteError(`Resolve accepted the request but no subtitles appeared on the timeline. The generated file is kept at ${srtPath}; import it via File > Import > Subtitle. Backup: ${backup.backupName}.`, 'verification-failed', { srtPath });
+  const r = await placeSrtVerified(a, timeline, mediaPool, imported[0], ctx, preview.cues);
+  if (r.verify.ok) {
+    return { backup, srtPath, subtitleTrack: r.trackIndex, verify: r.verify, summary: `${r.added.length} subtitle(s) on new subtitle track ${r.trackIndex}; timings verified` };
   }
-  const trackIndex = changed + 1;
-  const placed = await trackItems(a, timeline, 'subtitle', trackIndex);
-  const verify = verifyCuePlacement(preview.cues, placed);
-  return { backup, srtPath, subtitleTrack: trackIndex, verify, summary: `${placed.length} subtitle(s) on subtitle track ${trackIndex}; ${verify.ok ? 'timings verified' : 'timing differences found'}` };
+  // A real failure on this build outranks the earlier scratch-test pass: switch the feature off.
+  const caps = deps.capabilities();
+  deps.storage.updateSettings((s) => ({ ...s, verified: { ...s.verified, 'captions.srtTrack': { ok: false, build: caps && caps.build, testVersion: 2, at: new Date().toISOString(), detail: r.verify.problems.slice(0, 2).join(' ') } } }));
+  throw new SuiteError(`Resolve did not place the subtitles at the right frames (${r.verify.problems.slice(0, 2).join(' ')}). ${r.rolledBack ? 'Everything it added was removed again, so the timeline is unchanged. ' : ''}The SRT file is kept at ${srtPath}; you can import it with File > Import > Subtitle. Backup: ${backup.backupName}.`, 'verification-failed', { srtPath, verify: r.verify });
+}
+
+/**
+ * Place an imported SRT pool item on a NEW subtitle track and verify it.
+ *
+ * Observed on 21.0.0b20: given only recordFrame, Resolve ignored it and
+ * appended the subtitles after the existing timeline content. So this names
+ * the target track explicitly, identifies exactly the items the call added
+ * (by unique id, on any subtitle track), and removes them again — plus the
+ * track it created — if their frames are not the expected ones.
+ */
+async function placeSrtVerified(a, timeline, mediaPool, srtItem, ctx, expectedCues) {
+  const snapshot = async () => {
+    const n = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
+    const items = [];
+    for (let i = 1; i <= n; i++) for (const it of await trackItems(a, timeline, 'subtitle', i)) items.push({ ...it, track: i });
+    return { n, items };
+  };
+  const before = await snapshot();
+  const known = new Set(before.items.map((x) => x.id));
+  await a.must('Timeline', timeline, 'AddTrack', 'subtitle');
+  const trackIndex = (await a.call('Timeline', timeline, 'GetTrackCount', 'subtitle')) || 0;
+  if (trackIndex !== before.n + 1) throw new SuiteError('Could not create a new subtitle track.', 'call-failed');
+  await a.call('MediaPool', mediaPool, 'AppendToTimeline', [{ mediaPoolItem: srtItem, recordFrame: ctx.startFrame, trackIndex }]);
+  const after = await snapshot();
+  const added = after.items.filter((x) => !known.has(x.id)).sort((x, y) => x.start - y.start);
+  let verify = verifyCuePlacement(expectedCues, added);
+  if (verify.ok && added.some((x) => x.track !== trackIndex)) verify = { ok: false, problems: ['Subtitles went to a different subtitle track than requested.'] };
+  let rolledBack = false;
+  if (!verify.ok) {
+    if (added.length) await a.call('Timeline', timeline, 'DeleteClips', added.map((x) => x.ref), false);
+    const left = listOf(await a.call('Timeline', timeline, 'GetItemListInTrack', 'subtitle', trackIndex));
+    if (!left.length) await a.call('Timeline', timeline, 'DeleteTrack', 'subtitle', trackIndex);
+    const check = await snapshot();
+    rolledBack = check.items.every((x) => known.has(x.id)) && check.n === before.n;
+  }
+  return { trackIndex, added: added.map((x) => ({ start: x.start, end: x.end, track: x.track })), verify, rolledBack };
 }
 
 function verifyCuePlacement(cues, placed, tolerance = 0) {
@@ -302,4 +328,4 @@ async function applyStyled(a, deps, preview, req, task) {
   };
 }
 
-module.exports = { prepare, srtFromPreview, applySubtitleTrack, applyStyled, transcribeTrack, verifyCuePlacement, loadFileWords };
+module.exports = { prepare, srtFromPreview, applySubtitleTrack, placeSrtVerified, applyStyled, transcribeTrack, verifyCuePlacement, loadFileWords };
