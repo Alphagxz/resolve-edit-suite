@@ -5,7 +5,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const PLUGIN_FOLDER = 'EditSuite';
+// Official README: plugin directory named com.<company>.<plugin_name>.
+const PLUGIN_FOLDER = 'com.editsuite.resolve.panel';
 const RECEIPT = 'edit-suite-install-receipt.json';
 const PLUGIN = {
   Id: 'com.editsuite.resolve.panel',

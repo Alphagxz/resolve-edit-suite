@@ -43,7 +43,7 @@ Read-only. Writes `edit-suite-discovery-<time>/` with the official docs from you
 ## Layout
 
 ```
-plugin/                 installed as-is into Workflow Integration Plugins/EditSuite
+plugin/                 installed as-is into Workflow Integration Plugins/com.editsuite.resolve.panel
   main.js, preload.js   sandboxed Electron entry + bridge
   router.js             whitelisted IPC operations, confirmation & preview-by-id rules
   resolve/              version adapter (capabilities.js) and instrumented API wrapper (adapter.js)

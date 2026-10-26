@@ -236,6 +236,47 @@ test('rough cut with unrelated picture rebuilds audio only and says so', async (
   assert.equal(fake.project.current.tracks.video[0].length, 0);
 });
 
+test('removing review markers removes every marker of the run (DeleteMarkerByCustomData only deletes the first)', async () => {
+  const { router, dir, tl } = setup();
+  const wav = path.join(dir, 'gaps.wav');
+  // speech with three 1 s pauses
+  writeWav(wav, { seconds: 8, sample: (t) => ((t % 2) < 1 ? 0.4 * Math.sin(2 * Math.PI * 200 * t) : 0.0003) });
+  const mpi = new MediaPoolItem('gaps', { FPS: 25, 'File Path': wav });
+  tl.tracks.audio[0].push(new TimelineItem({ name: 'gaps', start: 90000, end: 90200, mpi }));
+  tl.markers[10] = { color: 'Blue', name: 'user marker', customData: '' };
+  const an = await ok(router, 'roughcut.analyse', { track: { type: 'audio', index: 1 }, options: { thresholdDb: -40, paddingMs: 100 } });
+  assert.ok(an.cuts.length >= 3, `cuts: ${an.cuts.length}`);
+  const m = await ok(router, 'roughcut.markers', { runId: an.runId, enabledIds: an.cuts.map((c) => c.id), confirm: true });
+  assert.equal(m.added, an.cuts.length);
+  const c = await ok(router, 'roughcut.clearMarkers', { runId: an.runId, confirm: true });
+  assert.equal(c.removed, an.cuts.length);
+  assert.equal(c.remaining, 0);
+  assert.deepEqual(Object.keys(tl.markers), ['10'], "the user's own marker is untouched");
+});
+
+test('mixed-rate rebuild uses the source start time in seconds (30 fps clip in a 24 fps timeline)', async () => {
+  const { router, dir, fake } = setup();
+  fake.project.settings.timelineFrameRate = '24';
+  const tl24 = new Timeline(fake.project, 'Timeline 3', { rate: '24', startFrame: 86400 });
+  fake.project.timelines.push(tl24);
+  fake.project.current = tl24;
+  const wav = path.join(dir, 'mixed.wav');
+  writeWav(wav, { seconds: 10, sample: (t) => (t < 4 || t >= 6 ? 0.4 * Math.sin(2 * Math.PI * 200 * t) : 0.0003) });
+  const mpi = new MediaPoolItem('A001', { FPS: 30, 'File Path': wav });
+  // Trimmed 2 s into the source: 60 media frames. GetLeftOffset deliberately reports a
+  // different unit (48 = timeline frames) to prove the seconds-based path is used.
+  tl24.tracks.audio[0].push(new TimelineItem({ name: 'A001', start: 86400, end: 86400 + 192, leftOffset: 48, mpi, sourceStartTime: 2 }));
+  const an = await ok(router, 'roughcut.analyse', { track: { type: 'audio', index: 1 }, options: { thresholdDb: -40, paddingMs: 100 } });
+  // source 4-6 s is silent -> timeline 2-4 s
+  assert.equal(an.cuts.length, 1);
+  const cutStartSec = an.cuts[0].start / 705600000;
+  assert.ok(Math.abs(cutStartSec - 2.1) < 0.05, `cut starts at ${cutStartSec}s`);
+  const b = await ok(router, 'roughcut.build', { runId: an.runId, enabledIds: [1], confirm: true });
+  assert.equal(b.verify.ok, true, JSON.stringify(b.verify));
+  const pieces = fake.project.current.tracks.audio[0].sort((x, y) => x.start - y.start);
+  assert.equal(pieces[0].leftOffset, 60, 'first piece starts 2 s (60 media frames) into the source');
+});
+
 test('rough cut refuses when new timelines would not match the source timeline settings', async () => {
   const { router, dir, tl, fake } = setup();
   const wav = path.join(dir, 'a.wav');

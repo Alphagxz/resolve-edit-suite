@@ -255,8 +255,8 @@
           } }, 'Add review markers'),
           h('button.ghost', { onclick: async () => {
             if (!(await confirmAction('Remove review markers', 'Removes only the markers this analysis added.'))) return;
-            await call('roughcut.clearMarkers', { runId: r.runId, confirm: true });
-            toast('Review markers removed.', { ok: true });
+            const c = await call('roughcut.clearMarkers', { runId: r.runId, confirm: true });
+            toast(c.summary, { ok: c.remaining === 0 });
           } }, 'Remove review markers'),
           h('span.spacer'),
           h('label.check', h('input', { type: 'checkbox', checked: f.saveAndReverify, onchange: bind('saveAndReverify') }), 'Save project and re-verify'),
